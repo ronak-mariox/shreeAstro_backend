@@ -76,4 +76,55 @@ function attachUploadedUrl(req, res, next) {
 /** What Create Account and Edit Profile send their photo as. */
 const uploadProfilePhoto = [singleImage('photo', 'profiles'), attachUploadedUrl];
 
-module.exports = { uploadProfilePhoto, singleImage, attachUploadedUrl, IMAGE_TYPES };
+/**
+ * Documents and bank proofs — a scan of an Aadhaar card or a cancelled cheque.
+ * A PDF is allowed here as well as an image, because that is what a bank hands
+ * people.
+ */
+const DOCUMENT_TYPES = [...IMAGE_TYPES, 'application/pdf'];
+
+const documentFilter = (req, file, done) => {
+  if (!DOCUMENT_TYPES.includes(file.mimetype)) {
+    done(ApiError.badRequest('Upload an image or a PDF.'));
+    return;
+  }
+  done(null, true);
+};
+
+/**
+ * Records the whole file, not just its URL, as `req.uploadedFile` — documents
+ * are stored as a fileSchema (see models/common.js) so they keep their name,
+ * type and size for the admin reviewing them.
+ */
+function attachUploadedFile(req, res, next) {
+  if (req.file) {
+    req.uploadedFile = {
+      url: publicUrlFor(req.file, req),
+      key: req.file.filename,
+      fileName: req.file.originalname,
+      mimeType: req.file.mimetype,
+      sizeBytes: req.file.size,
+    };
+  }
+  next();
+}
+
+/** What the Documents and Bank Details screens send their scan as. */
+const uploadDocument = [
+  multer({
+    storage: storageFor('documents'),
+    fileFilter: documentFilter,
+    limits: { fileSize: env.maxUploadMb * 1024 * 1024, files: 1 },
+  }).single('file'),
+  attachUploadedFile,
+];
+
+module.exports = {
+  uploadProfilePhoto,
+  uploadDocument,
+  singleImage,
+  attachUploadedUrl,
+  attachUploadedFile,
+  IMAGE_TYPES,
+  DOCUMENT_TYPES,
+};

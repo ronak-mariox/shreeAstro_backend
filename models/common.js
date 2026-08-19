@@ -104,8 +104,11 @@ const deviceSchema = new Schema(
 );
 
 /**
- * A one-time password, held hashed. `select: false` keeps it off every ordinary
- * read — the verify handler must ask for it explicitly.
+ * A one-time password, held hashed.
+ *
+ * Login codes do *not* use this — they live in Redis with a TTL, so they expire
+ * on their own (see services/otp.service.js). This is kept for the codes that
+ * do belong on a document, such as an admin's two-factor code.
  */
 const otpSchema = new Schema(
   {

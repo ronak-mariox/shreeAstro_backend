@@ -219,6 +219,7 @@ astrologerProfileSchema.methods.syncToAccount = async function syncToAccount() {
   return Astrologer.findByIdAndUpdate(this.astrologer, {
     expertise: this.expertise,
     languages: this.languages,
+    topics: this.topics,
     experienceYears: this.experienceYears,
   });
 };

@@ -8,12 +8,21 @@
   "main": "index.js",
   "scripts": {
     "start": "node index.js",
-    "dev": "node --watch index.js"
+    "dev": "node --watch index.js",
+    "seed:admin": "node scripts/seed-admin.js",
+    "test": "node tests/seed-admin.test.js && node tests/flow.test.js && node tests/admin-created-astrologer.test.js && node tests/platform.test.js && node tests/admin-panel-contract.test.js && node tests/apps-contract.test.js && node tests/socket.test.js",
+    "test:flow": "node tests/flow.test.js",
+    "test:socket": "node tests/socket.test.js",
+    "test:admin-create": "node tests/admin-created-astrologer.test.js",
+    "test:platform": "node tests/platform.test.js",
+    "test:contract": "node tests/admin-panel-contract.test.js && node tests/apps-contract.test.js"
   },
   "dependencies": {
+    "cookie-parser": "^1.4.7",
     "cors": "^2.8.6",
     "dotenv": "^17.4.2",
     "express": "^5.2.1",
+    "express-validator": "^7.3.2",
     "ioredis": "^6.0.0",
     "jsonwebtoken": "^9.0.3",
     "mongoose": "^9.9.3",

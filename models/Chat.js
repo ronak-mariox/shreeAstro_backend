@@ -116,6 +116,11 @@ const chatSessionSchema = new Schema(
       comment: { type: String, trim: true, maxlength: 1000 },
       ratedAt: { type: Date },
       reply: { type: String, trim: true, maxlength: 1000 },
+      /** Raised by the astrologer as unfair, for an admin to look at. */
+      flagged: { type: Boolean, default: false },
+      flagReason: { type: String, trim: true },
+      /** Held at the top of the astrologer's public profile. */
+      pinned: { type: Boolean, default: false },
     },
 
     /** Counter handed to each message; ordering key and reconnect cursor. */

@@ -13,7 +13,6 @@ const { Schema } = mongoose;
 const {
   phoneSchema,
   deviceSchema,
-  otpSchema,
   notificationPrefsSchema,
 } = require('./common');
 
@@ -65,8 +64,6 @@ const userSchema = new Schema(
     isEmailVerified: { type: Boolean, default: false },
     /** The panel's "verified" tick — KYC-level, not just a verified channel. */
     isVerified: { type: Boolean, default: false },
-
-    loginOtp: { type: otpSchema, select: false },
 
     profile: { type: Schema.Types.ObjectId, ref: 'UserProfile' },
     /** Mirrors profile.avatar so listings need no join. */
