@@ -1,0 +1,1914 @@
+{
+  "info": {
+    "_postman_id": "c19d176d-688c-4047-96f8-94d4acc433f8",
+    "name": "Shree Astro \u2014 Admin Panel",
+    "description": "Everything **admin_panel** calls.\n\n## Start here\n1. Seed the admin: `npm run seed:admin` in the backend folder. That gives you `admin@shreeastro.com` / `admin@123`.\n2. Select the **Shree Astro \u2014 Local** environment.\n3. Run *2 \u00b7 Sign in \u2192 Admin login*. The token is saved, and the console prints which permissions the account holds.\n\n## Permissions\nEvery route needs a permission, not just an admin token \u2014 a Finance admin can read payments but cannot approve astrologers, and gets a **403** if they try. Each request below says which permission it needs. The role-to-permission map is in `models/Admin.js`; `super_admin` has all of them.\n\n## The approval flow\n*5 \u00b7 Astrologers* is the panel's main job, and the order matters: approve the documents and the bank account, then approve the application \u2014 that last step is what mints the astro code, sets the opening rates, and puts the astrologer into the seeker's directory.\n\n## Auditing\nEvery change here writes an audit row automatically. Check *10 \u00b7 Audit logs* after running anything in this collection.",
+    "schema": "https://schema.getpostman.com/json/collection/v2.1.0/collection.json"
+  },
+  "auth": {
+    "type": "bearer",
+    "bearer": [
+      {
+        "key": "token",
+        "value": "{{adminAccessToken}}",
+        "type": "string"
+      }
+    ]
+  },
+  "variable": [
+    {
+      "key": "baseUrl",
+      "value": "http://localhost:5000/api/v1"
+    }
+  ],
+  "item": [
+    {
+      "name": "1 \u00b7 Getting started",
+      "item": [
+        {
+          "name": "Health check",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/../../health",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "..",
+                "..",
+                "health"
+              ]
+            },
+            "description": "Is the server up and is Mongo connected? Note this one sits outside /api/v1.",
+            "auth": {
+              "type": "noauth"
+            }
+          },
+          "response": []
+        }
+      ],
+      "description": ""
+    },
+    {
+      "name": "2 \u00b7 Sign in",
+      "item": [
+        {
+          "name": "Admin login",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/auth/admin/login",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "auth",
+                "admin",
+                "login"
+              ]
+            },
+            "description": "Email and password \u2014 the only account type that uses one. Seed it with `npm run seed:admin`, which creates `admin@shreeastro.com` / `admin@123`.\n\nThe tokens are also set as httpOnly cookies, which is what the browser panel actually uses; the body is here so Postman can work too.\n\nA wrong email and a wrong password give the **same** answer, so the form cannot be used to discover which addresses are admins. Five wrong passwords lock the account for 15 minutes.",
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"email\": \"admin@shreeastro.com\",\n  \"password\": \"admin@123\"\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            },
+            "auth": {
+              "type": "noauth"
+            }
+          },
+          "response": [],
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "const save = (k, v) => (pm.environment.name ? pm.environment.set(k, v) : pm.collectionVariables.set(k, v));",
+                  "pm.test(\"request succeeded\", () => pm.expect(pm.response.code).to.be.oneOf([200, 201]));",
+                  "const body = pm.response.json();",
+                  "save(\"adminAccessToken\", body.accessToken);",
+                  "save(\"adminRefreshToken\", body.refreshToken);",
+                  "console.log(\"permissions:\", body.admin.permissions.join(\", \"));"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "Refresh tokens",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/auth/refresh",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "auth",
+                "refresh"
+              ]
+            },
+            "description": "Call this when a request answers 401 with `code: \"token_expired\"` \u2014 that means refresh and retry, not sign out. Any other 401 means the session is dead.\n\nA browser sends the cookie automatically; the apps post the refresh token in the body.",
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"refreshToken\": \"{{adminRefreshToken}}\"\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            },
+            "auth": {
+              "type": "noauth"
+            }
+          },
+          "response": [],
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "const save = (k, v) => (pm.environment.name ? pm.environment.set(k, v) : pm.collectionVariables.set(k, v));",
+                  "pm.test(\"request succeeded\", () => pm.expect(pm.response.code).to.be.oneOf([200, 201]));",
+                  "const body = pm.response.json();",
+                  "save(\"adminAccessToken\", body.accessToken);",
+                  "save(\"adminRefreshToken\", body.refreshToken);"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "Logout",
+          "request": {
+            "method": "POST",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/auth/logout",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "auth",
+                "logout"
+              ]
+            },
+            "description": "Clears the cookies the admin panel uses. The apps hold no cookies, so signing out there is a local act: delete both tokens from the keystore. Tokens stay valid until they expire."
+          },
+          "response": []
+        },
+        {
+          "name": "Who am I",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/auth/me",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "auth",
+                "me"
+              ]
+            },
+            "description": "The signed-in account, shaped by whichever role the token carries."
+          },
+          "response": [],
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test(\"request succeeded\", () => pm.expect(pm.response.code).to.be.oneOf([200, 201]));"
+                ]
+              }
+            }
+          ]
+        }
+      ],
+      "description": ""
+    },
+    {
+      "name": "3 \u00b7 Dashboard",
+      "item": [
+        {
+          "name": "Dashboard",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/admin/dashboard?days=7",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "admin",
+                "dashboard"
+              ],
+              "query": [
+                {
+                  "key": "days",
+                  "value": "7",
+                  "description": "How many days of the consultation chart",
+                  "disabled": false
+                }
+              ]
+            },
+            "description": "The four tiles and the chart.\n\n`revenue.platformThisMonth` is the platform's cut \u2014 what seekers were charged, less what astrologers earned. Needs `dashboard.view`."
+          },
+          "response": [],
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test(\"request succeeded\", () => pm.expect(pm.response.code).to.be.oneOf([200, 201]));"
+                ]
+              }
+            }
+          ]
+        }
+      ],
+      "description": ""
+    },
+    {
+      "name": "4 \u00b7 Users",
+      "item": [
+        {
+          "name": "List users",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/admin/users?page=1&limit=20",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "admin",
+                "users"
+              ],
+              "query": [
+                {
+                  "key": "search",
+                  "value": "arjun",
+                  "description": "Name, email or phone",
+                  "disabled": true
+                },
+                {
+                  "key": "status",
+                  "value": "active",
+                  "description": "active | blocked | deleted",
+                  "disabled": true
+                },
+                {
+                  "key": "page",
+                  "value": "1",
+                  "description": "",
+                  "disabled": false
+                },
+                {
+                  "key": "limit",
+                  "value": "20",
+                  "description": "",
+                  "disabled": false
+                }
+              ]
+            },
+            "description": "Needs `users.view`."
+          },
+          "response": [],
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "const save = (k, v) => (pm.environment.name ? pm.environment.set(k, v) : pm.collectionVariables.set(k, v));",
+                  "pm.test(\"request succeeded\", () => pm.expect(pm.response.code).to.be.oneOf([200, 201]));",
+                  "const items = pm.response.json().items || [];",
+                  "if (items.length) save(\"userId\", items[0].id);"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "Block a user",
+          "request": {
+            "method": "PATCH",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/admin/users/{{userId}}/status",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "admin",
+                "users",
+                "{{userId}}",
+                "status"
+              ]
+            },
+            "description": "A blocked user cannot sign in at all \u2014 even asking for an OTP is refused with 403 `account_blocked`. Needs `users.manage`.\n\nWrites an audit row.",
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"status\": \"blocked\",\n  \"reason\": \"Payment dispute\"\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            }
+          },
+          "response": [],
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test(\"request succeeded\", () => pm.expect(pm.response.code).to.be.oneOf([200, 201]));"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "Unblock a user",
+          "request": {
+            "method": "PATCH",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/admin/users/{{userId}}/status",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "admin",
+                "users",
+                "{{userId}}",
+                "status"
+              ]
+            },
+            "description": "",
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"status\": \"active\"\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            }
+          },
+          "response": []
+        }
+      ],
+      "description": ""
+    },
+    {
+      "name": "5 \u00b7 Astrologers",
+      "item": [
+        {
+          "name": "Create astrologer (short form)",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/admin/astrologers",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "admin",
+                "astrologers"
+              ]
+            },
+            "description": "**The short form.** Four fields and nothing else:\n\n- `email` \u2014 the address they sign in with. This is the whole identity.\n- `commissionPercent` \u2014 the platform's cut. Omit it and the platform default from Settings is used.\n- `availability` \u2014 free text, e.g. \"Mon\u2013Sat \u00b7 9 AM \u2013 9 PM\".\n- `status` \u2014 `approved` (listed) or `blocked` (hidden).\n\nEverything else \u2014 name, phone, photo, languages, expertise, experience, about and **rates** \u2014 the astrologer fills in themselves from the profile screen in their own app.\n\nThe account is approved on creation, so there is no application to review. A placeholder name is derived from the email until they set their real one, and an astro code is minted immediately.\n\nThey will **not appear in the seeker's directory** until they have set at least one rate \u2014 listing someone who cannot be consulted is worse than not listing them.\n\nRefusals: 400 on a malformed email or a commission outside 0\u2013100, 409 if that email already has an account.",
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"email\": \"rajesh.sharma@example.com\",\n  \"commissionPercent\": 30,\n  \"availability\": \"Mon\\u2013Sat \\u00b7 9 AM \\u2013 9 PM\",\n  \"status\": \"approved\"\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            }
+          },
+          "response": [],
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "const save = (k, v) => (pm.environment.name ? pm.environment.set(k, v) : pm.collectionVariables.set(k, v));",
+                  "pm.test(\"created\", () => pm.response.to.have.status(201));",
+                  "const a = pm.response.json().astrologer;",
+                  "save(\"astrologerId\", a.id);",
+                  "save(\"astroEmail\", a.email);",
+                  "console.log(\"They sign in with:\", a.email);"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "List astrologers",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/admin/astrologers?applicationStatus=under_review&page=1&limit=20",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "admin",
+                "astrologers"
+              ],
+              "query": [
+                {
+                  "key": "applicationStatus",
+                  "value": "under_review",
+                  "description": "registered | professional_submitted | documents_submitted | bank_submitted | under_review | approved | rejected | suspended",
+                  "disabled": false
+                },
+                {
+                  "key": "status",
+                  "value": "active",
+                  "description": "active | blocked | deleted",
+                  "disabled": true
+                },
+                {
+                  "key": "search",
+                  "value": "rajesh",
+                  "description": "Name, email or phone",
+                  "disabled": true
+                },
+                {
+                  "key": "page",
+                  "value": "1",
+                  "description": "",
+                  "disabled": false
+                },
+                {
+                  "key": "limit",
+                  "value": "20",
+                  "description": "",
+                  "disabled": false
+                }
+              ]
+            },
+            "description": "Drop the `applicationStatus` filter to see everyone. Needs `astrologers.view`."
+          },
+          "response": [],
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "const save = (k, v) => (pm.environment.name ? pm.environment.set(k, v) : pm.collectionVariables.set(k, v));",
+                  "pm.test(\"request succeeded\", () => pm.expect(pm.response.code).to.be.oneOf([200, 201]));",
+                  "const items = pm.response.json().items || [];",
+                  "if (items.length) save(\"astrologerId\", items[0].id);"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "Application detail",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/admin/astrologers/{{astrologerId}}",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "admin",
+                "astrologers",
+                "{{astrologerId}}"
+              ]
+            },
+            "description": "Everything needed to decide: the account, the profile, the filed documents, the bank accounts and any price-change requests."
+          },
+          "response": [],
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "const save = (k, v) => (pm.environment.name ? pm.environment.set(k, v) : pm.collectionVariables.set(k, v));",
+                  "pm.test(\"request succeeded\", () => pm.expect(pm.response.code).to.be.oneOf([200, 201]));",
+                  "const body = pm.response.json();",
+                  "if ((body.documents || []).length) save(\"documentId\", body.documents[0]._id);",
+                  "if ((body.bankAccounts || []).length) save(\"bankAccountId\", body.bankAccounts[0]._id);",
+                  "const pending = (body.priceChangeRequests || []).find(r => r.status === 'pending');",
+                  "if (pending) save(\"priceChangeRequestId\", pending._id);"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "Approve a document",
+          "request": {
+            "method": "PATCH",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/admin/astrologers/{{astrologerId}}/documents/{{documentId}}",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "admin",
+                "astrologers",
+                "{{astrologerId}}",
+                "documents",
+                "{{documentId}}"
+              ]
+            },
+            "description": "Send `rejected` with a `reason` to turn it down instead. Needs `astrologers.approve`.",
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"status\": \"approved\"\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            }
+          },
+          "response": [],
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test(\"request succeeded\", () => pm.expect(pm.response.code).to.be.oneOf([200, 201]));"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "Approve a bank account",
+          "request": {
+            "method": "PATCH",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/admin/astrologers/{{astrologerId}}/bank-accounts/{{bankAccountId}}",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "admin",
+                "astrologers",
+                "{{astrologerId}}",
+                "bank-accounts",
+                "{{bankAccountId}}"
+              ]
+            },
+            "description": "A payout cannot be requested against an unapproved account.",
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"status\": \"approved\"\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            }
+          },
+          "response": [],
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test(\"request succeeded\", () => pm.expect(pm.response.code).to.be.oneOf([200, 201]));"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "Approve the application",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/admin/astrologers/{{astrologerId}}/approve",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "admin",
+                "astrologers",
+                "{{astrologerId}}",
+                "approve"
+              ]
+            },
+            "description": "The decision that puts an astrologer into the seeker's directory.\n\nIt also **mints their astro code** and **sets their opening rates** \u2014 without at least one service they cannot take work, so send the services here.\n\n`ratePerMinute` is the list price and `offerPercent` is the discount struck through it. `freeMinutes` is what a first-time seeker gets free. Needs `astrologers.approve`.",
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"commissionPercent\": 25,\n  \"services\": [\n    {\n      \"type\": \"chat\",\n      \"ratePerMinute\": 20,\n      \"offerPercent\": 0,\n      \"freeMinutes\": 3,\n      \"isEnabled\": true\n    },\n    {\n      \"type\": \"call\",\n      \"ratePerMinute\": 30,\n      \"offerPercent\": 0,\n      \"isEnabled\": true\n    }\n  ]\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            }
+          },
+          "response": [],
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "const save = (k, v) => (pm.environment.name ? pm.environment.set(k, v) : pm.collectionVariables.set(k, v));",
+                  "pm.test(\"request succeeded\", () => pm.expect(pm.response.code).to.be.oneOf([200, 201]));",
+                  "const body = pm.response.json();",
+                  "save(\"astroCode\", body.astroCode);",
+                  "pm.test(\"approved\", () => pm.expect(body.applicationStatus).to.eql(\"approved\"));"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "Reject the application",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/admin/astrologers/{{astrologerId}}/reject",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "admin",
+                "astrologers",
+                "{{astrologerId}}",
+                "reject"
+              ]
+            },
+            "description": "The reason is shown back in the astrologer's app, and they can no longer sign in.",
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"reason\": \"The Aadhaar scan was unreadable. Please apply again.\"\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            }
+          },
+          "response": []
+        },
+        {
+          "name": "Block an astrologer",
+          "request": {
+            "method": "PATCH",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/admin/astrologers/{{astrologerId}}/status",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "admin",
+                "astrologers",
+                "{{astrologerId}}",
+                "status"
+              ]
+            },
+            "description": "Takes them offline and out of the directory at once. Needs `astrologers.manage`.",
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"status\": \"blocked\",\n  \"reason\": \"Repeated complaints\"\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            }
+          },
+          "response": []
+        },
+        {
+          "name": "Decide a price change",
+          "request": {
+            "method": "PATCH",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/admin/astrologers/{{astrologerId}}/price-changes/{{priceChangeRequestId}}",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "admin",
+                "astrologers",
+                "{{astrologerId}}",
+                "price-changes",
+                "{{priceChangeRequestId}}"
+              ]
+            },
+            "description": "Approving is what actually writes the new rate onto the service \u2014 an astrologer can never set it themselves.\n\nIf the request had `applyToAll`, every service is repriced. Needs `astrologers.manage`.",
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"status\": \"approved\"\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            }
+          },
+          "response": [],
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test(\"request succeeded\", () => pm.expect(pm.response.code).to.be.oneOf([200, 201]));"
+                ]
+              }
+            }
+          ]
+        }
+      ],
+      "description": "Reviewing applications is the panel's main job \u2014 approve the documents and the bank account first, then the application."
+    },
+    {
+      "name": "6 \u00b7 Consultations",
+      "item": [
+        {
+          "name": "List consultations",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/admin/consultations?page=1&limit=20",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "admin",
+                "consultations"
+              ],
+              "query": [
+                {
+                  "key": "status",
+                  "value": "ended",
+                  "description": "requested | active | ended | rejected | cancelled",
+                  "disabled": true
+                },
+                {
+                  "key": "channel",
+                  "value": "chat",
+                  "description": "chat | call",
+                  "disabled": true
+                },
+                {
+                  "key": "page",
+                  "value": "1",
+                  "description": "",
+                  "disabled": false
+                },
+                {
+                  "key": "limit",
+                  "value": "20",
+                  "description": "",
+                  "disabled": false
+                }
+              ]
+            },
+            "description": "Every session with who was in it, how long it ran, what it cost and how it was rated. Needs `consultations.view`."
+          },
+          "response": [],
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test(\"request succeeded\", () => pm.expect(pm.response.code).to.be.oneOf([200, 201]));"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "End a live session",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/admin/consultations/{{chatId}}/end",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "admin",
+                "consultations",
+                "{{chatId}}",
+                "end"
+              ]
+            },
+            "description": "For a session that is stuck or being abused. It runs through the ordinary end-a-chat path, so the seeker is still charged for the time that actually elapsed and the astrologer is still paid \u2014 this is not the same as cancelling. Needs `consultations.manage`.",
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"reason\": \"Abusive language reported\"\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            }
+          },
+          "response": []
+        }
+      ],
+      "description": ""
+    },
+    {
+      "name": "7 \u00b7 Payments",
+      "item": [
+        {
+          "name": "List transactions",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/admin/transactions?page=1&limit=20",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "admin",
+                "transactions"
+              ],
+              "query": [
+                {
+                  "key": "type",
+                  "value": "topup",
+                  "description": "topup | consultation_charge | consultation_earning | refund | withdrawal | commission | bonus | adjustment",
+                  "disabled": true
+                },
+                {
+                  "key": "status",
+                  "value": "success",
+                  "description": "pending | success | failed | cancelled",
+                  "disabled": true
+                },
+                {
+                  "key": "ownerRole",
+                  "value": "user",
+                  "description": "user | astrologer",
+                  "disabled": true
+                },
+                {
+                  "key": "page",
+                  "value": "1",
+                  "description": "",
+                  "disabled": false
+                },
+                {
+                  "key": "limit",
+                  "value": "20",
+                  "description": "",
+                  "disabled": false
+                }
+              ]
+            },
+            "description": "Every movement of money on the platform. Needs `payments.view`."
+          },
+          "response": [],
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "const save = (k, v) => (pm.environment.name ? pm.environment.set(k, v) : pm.collectionVariables.set(k, v));",
+                  "pm.test(\"request succeeded\", () => pm.expect(pm.response.code).to.be.oneOf([200, 201]));",
+                  "const items = pm.response.json().items || [];",
+                  "const debit = items.find(i => i.direction === 'debit' && i.status === 'success');",
+                  "if (debit) save(\"transactionId\", debit._id);"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "Refund a charge",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/admin/transactions/{{transactionId}}/refund",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "admin",
+                "transactions",
+                "{{transactionId}}",
+                "refund"
+              ]
+            },
+            "description": "Puts the money back as a **new credit row** \u2014 the original charge is never edited. The ledger is a history, and history does not change.\n\nOnly a successful debit can be refunded, and only once (409 on a second try). Needs `payments.refund`.",
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"reason\": \"Astrologer did not respond\"\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            }
+          },
+          "response": [],
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test(\"request succeeded\", () => pm.expect(pm.response.code).to.be.oneOf([200, 201]));"
+                ]
+              }
+            }
+          ]
+        }
+      ],
+      "description": ""
+    },
+    {
+      "name": "8 \u00b7 Payouts",
+      "item": [
+        {
+          "name": "All wallets",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/admin/wallets?page=1&limit=25",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "admin",
+                "wallets"
+              ],
+              "query": [
+                {
+                  "key": "ownerRole",
+                  "value": "user",
+                  "description": "user | astrologer \u2014 omit for both",
+                  "disabled": true
+                },
+                {
+                  "key": "search",
+                  "value": "arjun",
+                  "description": "Matches the holder's name",
+                  "disabled": true
+                },
+                {
+                  "key": "page",
+                  "value": "1",
+                  "description": "",
+                  "disabled": false
+                },
+                {
+                  "key": "limit",
+                  "value": "25",
+                  "description": "",
+                  "disabled": false
+                }
+              ]
+            },
+            "description": "Seekers and astrologers in one table, biggest balance first. Needs `wallets.view`."
+          },
+          "response": [],
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "const save = (k, v) => (pm.environment.name ? pm.environment.set(k, v) : pm.collectionVariables.set(k, v));",
+                  "pm.test(\"request succeeded\", () => pm.expect(pm.response.code).to.be.oneOf([200, 201]));",
+                  "const items = pm.response.json().items || [];",
+                  "const u = items.find(i => i.ownerRole === 'user');",
+                  "if (u) save(\"walletOwnerId\", u.id);"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "Manual adjustment",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/admin/wallets/adjust",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "admin",
+                "wallets",
+                "adjust"
+              ]
+            },
+            "description": "A hand-made credit or debit. It goes through the same `post()` every other movement uses, so it lands in the ledger like anything else and the running balance stays correct.\n\nThe reason is **required** \u2014 the row records who made the adjustment and why, and there is no way to make an untraceable one. Needs `wallets.adjust`.",
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"ownerRole\": \"user\",\n  \"ownerId\": \"{{walletOwnerId}}\",\n  \"direction\": \"credit\",\n  \"amount\": 250,\n  \"reason\": \"Goodwill after a dropped session\"\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            }
+          },
+          "response": [],
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test(\"request succeeded\", () => pm.expect(pm.response.code).to.be.oneOf([200, 201]));"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "List withdrawal requests",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/admin/withdrawals?status=pending&page=1&limit=20",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "admin",
+                "withdrawals"
+              ],
+              "query": [
+                {
+                  "key": "status",
+                  "value": "pending",
+                  "description": "pending | approved | paid | rejected | cancelled",
+                  "disabled": false
+                },
+                {
+                  "key": "page",
+                  "value": "1",
+                  "description": "",
+                  "disabled": false
+                },
+                {
+                  "key": "limit",
+                  "value": "20",
+                  "description": "",
+                  "disabled": false
+                }
+              ]
+            },
+            "description": "Needs `wallets.view`."
+          },
+          "response": [],
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "const save = (k, v) => (pm.environment.name ? pm.environment.set(k, v) : pm.collectionVariables.set(k, v));",
+                  "pm.test(\"request succeeded\", () => pm.expect(pm.response.code).to.be.oneOf([200, 201]));",
+                  "const items = pm.response.json().items || [];",
+                  "if (items.length) save(\"withdrawalId\", items[0]._id);"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "Pay one out",
+          "request": {
+            "method": "PATCH",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/admin/withdrawals/{{withdrawalId}}",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "admin",
+                "withdrawals",
+                "{{withdrawalId}}"
+              ]
+            },
+            "description": "The money already left the astrologer's balance when they asked, so approving only records the transfer. **Make the bank transfer first**, then put its reference here.\n\nNeeds `payouts.approve`.",
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"status\": \"approved\",\n  \"payoutReference\": \"NEFT-2026081900991\"\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            }
+          },
+          "response": [],
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test(\"request succeeded\", () => pm.expect(pm.response.code).to.be.oneOf([200, 201]));"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "Reject one",
+          "request": {
+            "method": "PATCH",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/admin/withdrawals/{{withdrawalId}}",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "admin",
+                "withdrawals",
+                "{{withdrawalId}}"
+              ]
+            },
+            "description": "Puts the money back into the astrologer's withdrawable balance.",
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"status\": \"rejected\",\n  \"reason\": \"Bank details did not match\"\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            }
+          },
+          "response": []
+        }
+      ],
+      "description": ""
+    },
+    {
+      "name": "9 \u00b7 Content",
+      "item": [
+        {
+          "name": "List articles",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/admin/articles?page=1&limit=20",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "admin",
+                "articles"
+              ],
+              "query": [
+                {
+                  "key": "category",
+                  "value": "Astrology Basics",
+                  "description": "",
+                  "disabled": true
+                },
+                {
+                  "key": "status",
+                  "value": "published",
+                  "description": "draft | published | archived",
+                  "disabled": true
+                },
+                {
+                  "key": "page",
+                  "value": "1",
+                  "description": "",
+                  "disabled": false
+                },
+                {
+                  "key": "limit",
+                  "value": "20",
+                  "description": "",
+                  "disabled": false
+                }
+              ]
+            },
+            "description": "Needs `content.view`."
+          },
+          "response": [],
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "const save = (k, v) => (pm.environment.name ? pm.environment.set(k, v) : pm.collectionVariables.set(k, v));",
+                  "pm.test(\"request succeeded\", () => pm.expect(pm.response.code).to.be.oneOf([200, 201]));",
+                  "const items = pm.response.json().items || [];",
+                  "if (items.length) save(\"articleId\", items[0]._id);"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "Create an article",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/admin/articles",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "admin",
+                "articles"
+              ]
+            },
+            "description": "A `draft` is invisible to the apps. Setting `status: \"published\"` stamps `publishedAt` automatically, and the slug is built from the title if you do not send one. Needs `content.manage`.",
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"title\": \"Understanding Your Mahadasha Cycle\",\n  \"category\": \"Astrology Basics\",\n  \"author\": \"Pt. Rajesh Sharma\",\n  \"excerpt\": \"The Vimshottari Dasha divides a lifetime into planetary periods.\",\n  \"body\": \"Full article text goes here.\",\n  \"status\": \"published\",\n  \"visibility\": \"everyone\"\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            }
+          },
+          "response": [],
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "const save = (k, v) => (pm.environment.name ? pm.environment.set(k, v) : pm.collectionVariables.set(k, v));",
+                  "pm.test(\"created\", () => pm.response.to.have.status(201));",
+                  "save(\"articleId\", pm.response.json().article._id);"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "Update an article",
+          "request": {
+            "method": "PUT",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/admin/articles/{{articleId}}",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "admin",
+                "articles",
+                "{{articleId}}"
+              ]
+            },
+            "description": "Send only what changed.",
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"title\": \"Understanding Your Mahadasha Cycle (revised)\",\n  \"status\": \"draft\"\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            }
+          },
+          "response": []
+        },
+        {
+          "name": "Delete an article",
+          "request": {
+            "method": "DELETE",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/admin/articles/{{articleId}}",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "admin",
+                "articles",
+                "{{articleId}}"
+              ]
+            },
+            "description": ""
+          },
+          "response": []
+        }
+      ],
+      "description": ""
+    },
+    {
+      "name": "11 \u00b7 Settings",
+      "item": [
+        {
+          "name": "Get platform settings",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/admin/settings",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "admin",
+                "settings"
+              ]
+            },
+            "description": "Commission, recharge limits, minimum payout, free trial minutes, payout cycle, feature switches and app versions. Needs `settings.view`."
+          },
+          "response": [],
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test(\"request succeeded\", () => pm.expect(pm.response.code).to.be.oneOf([200, 201]));"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "Update platform settings",
+          "request": {
+            "method": "PATCH",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/admin/settings",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "admin",
+                "settings"
+              ]
+            },
+            "description": "Send only what changed. `features` and `appVersions` merge one key at a time, so sending a single switch does not clear the rest.\n\nThese are live: the recharge limits govern the very next top-up, and `freeTrialMinutes` the very next consultation. Needs `settings.manage`.",
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"commissionPercent\": 30,\n  \"minRecharge\": 50,\n  \"maxRecharge\": 50000,\n  \"minPayout\": 500,\n  \"freeTrialMinutes\": 5,\n  \"payoutCycle\": \"monthly\",\n  \"features\": {\n    \"aiAssistant\": true,\n    \"voiceConsultations\": true,\n    \"registrationsOpen\": true,\n    \"maintenanceMode\": false\n  }\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            }
+          },
+          "response": [],
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test(\"request succeeded\", () => pm.expect(pm.response.code).to.be.oneOf([200, 201]));"
+                ]
+              }
+            }
+          ]
+        }
+      ],
+      "description": "One document, edited from the panel's Settings page. Read live on every money path."
+    },
+    {
+      "name": "12 \u00b7 Admin team",
+      "item": [
+        {
+          "name": "List the team",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/admin/team?page=1&limit=25",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "admin",
+                "team"
+              ],
+              "query": [
+                {
+                  "key": "role",
+                  "value": "finance",
+                  "description": "",
+                  "disabled": true
+                },
+                {
+                  "key": "status",
+                  "value": "active",
+                  "description": "",
+                  "disabled": true
+                },
+                {
+                  "key": "page",
+                  "value": "1",
+                  "description": "",
+                  "disabled": false
+                },
+                {
+                  "key": "limit",
+                  "value": "25",
+                  "description": "",
+                  "disabled": false
+                }
+              ]
+            },
+            "description": "Needs `admins.manage`, which only `super_admin` has by default."
+          },
+          "response": [],
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "const save = (k, v) => (pm.environment.name ? pm.environment.set(k, v) : pm.collectionVariables.set(k, v));",
+                  "pm.test(\"request succeeded\", () => pm.expect(pm.response.code).to.be.oneOf([200, 201]));",
+                  "const items = pm.response.json().items || [];",
+                  "if (items.length > 1) save(\"teamMemberId\", items[0].id);"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "Add a colleague",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/admin/team",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "admin",
+                "team"
+              ]
+            },
+            "description": "A temporary password is generated and returned **once, here** \u2014 it is only stored as a hash, so it cannot be read back later. Hand it over and let them change it.\n\nRoles: `super_admin`, `admin`, `finance`, `support_lead`, `content_manager`, `consultation_manager`, `user_manager`.",
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"name\": \"Karan Doshi\",\n  \"email\": \"finance@shreeastro.com\",\n  \"role\": \"finance\"\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            }
+          },
+          "response": [],
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "const save = (k, v) => (pm.environment.name ? pm.environment.set(k, v) : pm.collectionVariables.set(k, v));",
+                  "pm.test(\"added\", () => pm.response.to.have.status(201));",
+                  "const body = pm.response.json();",
+                  "save(\"teamMemberId\", body.admin.id);",
+                  "console.log(\"Temporary password:\", body.temporaryPassword);"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "Change a role",
+          "request": {
+            "method": "PATCH",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/admin/team/{{teamMemberId}}",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "admin",
+                "team",
+                "{{teamMemberId}}"
+              ]
+            },
+            "description": "`signOutEverywhere: true` also invalidates every token that account is currently holding. You cannot suspend your own account.",
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"role\": \"support_lead\",\n  \"signOutEverywhere\": false\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            }
+          },
+          "response": []
+        },
+        {
+          "name": "Revoke access",
+          "request": {
+            "method": "DELETE",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/admin/team/{{teamMemberId}}",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "admin",
+                "team",
+                "{{teamMemberId}}"
+              ]
+            },
+            "description": "Suspends rather than deletes \u2014 audit rows point at this record, and a log that names a missing admin is worth less. You cannot revoke your own access."
+          },
+          "response": []
+        }
+      ],
+      "description": "Only `super_admin` reaches these by default."
+    },
+    {
+      "name": "13 \u00b7 Reports",
+      "item": [
+        {
+          "name": "Reports",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/admin/reports?days=30",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "admin",
+                "reports"
+              ],
+              "query": [
+                {
+                  "key": "days",
+                  "value": "30",
+                  "description": "Window in days",
+                  "disabled": false
+                }
+              ]
+            },
+            "description": "Everything the Reports page draws: new users and astrologers, the day-by-day activity trend, how people signed up, the most-asked topics, the top-earning astrologers and the business summary.\n\nAll of it is counted from the data rather than stored, so the numbers cannot drift out of step with what happened. Needs `reports.view`."
+          },
+          "response": [],
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test(\"request succeeded\", () => pm.expect(pm.response.code).to.be.oneOf([200, 201]));"
+                ]
+              }
+            }
+          ]
+        }
+      ],
+      "description": ""
+    },
+    {
+      "name": "14 \u00b7 Support tickets",
+      "item": [
+        {
+          "name": "List tickets",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/admin/support-tickets?page=1&limit=25",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "admin",
+                "support-tickets"
+              ],
+              "query": [
+                {
+                  "key": "status",
+                  "value": "open",
+                  "description": "open | in_progress | resolved | closed",
+                  "disabled": true
+                },
+                {
+                  "key": "issueType",
+                  "value": "payment",
+                  "description": "astrologer | puja | product | donation | payment | other",
+                  "disabled": true
+                },
+                {
+                  "key": "ownerRole",
+                  "value": "astrologer",
+                  "description": "user | astrologer",
+                  "disabled": true
+                },
+                {
+                  "key": "page",
+                  "value": "1",
+                  "description": "",
+                  "disabled": false
+                },
+                {
+                  "key": "limit",
+                  "value": "25",
+                  "description": "",
+                  "disabled": false
+                }
+              ]
+            },
+            "description": ""
+          },
+          "response": [],
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "const save = (k, v) => (pm.environment.name ? pm.environment.set(k, v) : pm.collectionVariables.set(k, v));",
+                  "pm.test(\"request succeeded\", () => pm.expect(pm.response.code).to.be.oneOf([200, 201]));",
+                  "const items = pm.response.json().items || [];",
+                  "if (items.length) save(\"ticketId\", items[0]._id);"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "Answer a ticket",
+          "request": {
+            "method": "PATCH",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/admin/support-tickets/{{ticketId}}",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "admin",
+                "support-tickets",
+                "{{ticketId}}"
+              ]
+            },
+            "description": "Whoever raised it gets a notification with the resolution.",
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"status\": \"resolved\",\n  \"resolution\": \"Your payout was released today.\"\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            }
+          },
+          "response": [],
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test(\"request succeeded\", () => pm.expect(pm.response.code).to.be.oneOf([200, 201]));"
+                ]
+              }
+            }
+          ]
+        }
+      ],
+      "description": ""
+    },
+    {
+      "name": "10 \u00b7 Audit logs",
+      "item": [
+        {
+          "name": "List audit logs",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/admin/audit-logs?page=1&limit=25",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "admin",
+                "audit-logs"
+              ],
+              "query": [
+                {
+                  "key": "area",
+                  "value": "Astrologers",
+                  "description": "Users | Astrologers | Consultations | Payments | Wallets | Content | Settings",
+                  "disabled": true
+                },
+                {
+                  "key": "adminId",
+                  "value": "",
+                  "description": "Narrow to one admin",
+                  "disabled": true
+                },
+                {
+                  "key": "page",
+                  "value": "1",
+                  "description": "",
+                  "disabled": false
+                },
+                {
+                  "key": "limit",
+                  "value": "25",
+                  "description": "",
+                  "disabled": false
+                }
+              ]
+            },
+            "description": "Every change an admin has made. Written automatically after a change succeeds \u2014 there is no endpoint that creates one, and none that edits or deletes one. A log you can change is not a log.\n\nNeeds `audit.view`."
+          },
+          "response": [],
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test(\"request succeeded\", () => pm.expect(pm.response.code).to.be.oneOf([200, 201]));"
+                ]
+              }
+            }
+          ]
+        }
+      ],
+      "description": ""
+    }
+  ]
+}

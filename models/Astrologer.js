@@ -15,13 +15,13 @@ const { Schema } = mongoose;
 const {
   phoneSchema,
   deviceSchema,
-  otpSchema,
   notificationPrefsSchema,
 } = require('./common');
 const {
   GENDERS,
   EXPERTISE,
   LANGUAGES,
+  TOPICS,
   BADGES,
   SERVICE_TYPES,
 } = require('./constants');
@@ -136,13 +136,17 @@ const astrologerSchema = new Schema(
      */
     astroCode: { type: String, unique: true, sparse: true, trim: true, index: true },
 
-    name: { type: String, trim: true, maxlength: 80, required: true },
+    /**
+     * Not required: an admin can create an account from an email address alone,
+     * and the astrologer fills their real name in from their own profile. Until
+     * they do, this holds a placeholder taken from the email.
+     */
+    name: { type: String, trim: true, maxlength: 80 },
     /** The number the app logs in with. */
     phone: { type: phoneSchema, default: () => ({}) },
     secondaryPhone: { type: phoneSchema, default: () => ({}) },
     email: { type: String, trim: true, lowercase: true },
     passwordHash: { type: String, select: false },
-    loginOtp: { type: otpSchema, select: false },
 
     gender: { type: String, enum: GENDERS },
     dateOfBirth: { type: Date },
@@ -161,6 +165,33 @@ const astrologerSchema = new Schema(
     },
     /** Which wizard step the app resumes on (0-based). */
     onboardingStep: { type: Number, default: 0, min: 0 },
+
+    /**
+     * How the account came to exist.
+     *
+     *   'self'   the astrologer applied through the app
+     *   'admin'  an admin created it from the panel with just an email
+     *
+     * An admin-created account starts empty and is completed by the astrologer
+     * from their own profile screen.
+     */
+    createdVia: { type: String, enum: ['self', 'admin'], default: 'self' },
+    createdBy: { type: Schema.Types.ObjectId, ref: 'Admin' },
+
+    /**
+     * Set the first time the astrologer saves a complete profile.
+     *
+     * It is what separates "still setting up" from "set up": before it, they
+     * may set their own rates; after it, a rate change has to be approved.
+     */
+    profileCompletedAt: { type: Date },
+
+    /**
+     * Working hours as plain text — "Mon–Sat · 9 AM – 9 PM" — which is what the
+     * admin panel's Availability field collects. Structured slots live on
+     * {@link AstrologerProfile}.availability for when a scheduler needs them.
+     */
+    availabilityNote: { type: String, trim: true, maxlength: 120 },
     approval: {
       at: { type: Date },
       by: { type: Schema.Types.ObjectId, ref: 'Admin' },
@@ -191,6 +222,8 @@ const astrologerSchema = new Schema(
      */
     expertise: [{ type: String, enum: EXPERTISE, index: true }],
     languages: [{ type: String, enum: LANGUAGES, index: true }],
+    /** Life areas they take questions on — what the seeker's category row filters by. */
+    topics: [{ type: String, enum: TOPICS, index: true }],
     experienceYears: { type: Number, default: 0, min: 0 },
     /** "Celebrity", "Top Choice" — the Top Astrologers filter matches these. */
     badges: [{ type: String, enum: BADGES }],

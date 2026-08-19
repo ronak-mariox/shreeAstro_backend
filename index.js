@@ -9,11 +9,14 @@ const http = require('http');
 
 const env = require('./config/env');
 const { connectDatabase, disconnectDatabase } = require('./config/database');
+const { connectRedis, disconnectRedis } = require('./config/redis');
 const { createApp } = require('./app');
 const { initSocket } = require('./socket');
 
 async function start() {
   await connectDatabase();
+  /** OTPs live in Redis, so a bad URL should fail here and not mid-login. */
+  await connectRedis();
 
   const app = createApp();
   const server = http.createServer(app);
@@ -28,6 +31,7 @@ async function start() {
     console.log(`\n[app] ${signal} received, shutting down`);
     server.close(async () => {
       await disconnectDatabase();
+      await disconnectRedis();
       process.exit(0);
     });
     /** Something is stuck; do not hang a deploy on it. */

@@ -1,18 +1,19 @@
-'use strict';
+/**
+ * One Redis connection for the whole server.
+ *
+ * Redis is used for things that should expire on their own — login OTPs today.
+ * Every key it writes gets a TTL, so nothing has to be cleaned up by hand.
+ *
+ * `env.redis.url` must be the TCP connection string (`rediss://...:6379` on
+ * Upstash), not the REST endpoint — the REST URL will never connect.
+ */
 
 const Redis = require('ioredis');
 
-const { env } = require('./env');
+const env = require('./env');
 
 /**
- * One shared connection for the whole process — everything that touches Redis
- * (OTP records today) imports this client.
- *
- * ioredis speaks the Redis wire protocol, so `env.redis.url` has to be the TCP
- * connection string (`rediss://default:<password>@<host>:6379` on Upstash), not
- * the REST endpoint — the REST URL is a plain HTTPS API and will never connect.
- *
- * `lazyConnect` holds the socket closed until connectRedis() runs, so a wrong
+ * `lazyConnect` keeps the socket closed until connectRedis() runs, so a bad
  * URL fails at boot next to the Mongo connection instead of inside the first
  * request that needs an OTP.
  */
@@ -22,17 +23,17 @@ const redis = new Redis(env.redis.url, {
   maxRetriesPerRequest: 3,
 });
 
-// A dropped connection is retried by ioredis on its own; log it rather than let
-// it surface as an unhandled error event and take the process down.
-redis.on('error', (err) => console.error('Redis error', err.message));
+/** ioredis retries a dropped connection itself; just log it. */
+redis.on('error', error => console.error('[redis]', error.message));
 
 async function connectRedis() {
   await redis.connect();
+  console.log('[redis] connected');
 }
 
 async function disconnectRedis() {
   await redis.quit();
-  console.info('Disconnected from Redis');
+  console.log('[redis] disconnected');
 }
 
 module.exports = { redis, connectRedis, disconnectRedis };

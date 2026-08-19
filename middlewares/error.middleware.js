@@ -45,6 +45,15 @@ function errorHandler(error, req, res, next) {
   if (isOperational && error.fields) {
     body.fields = error.fields;
   }
+  /** Lets a client tell "refresh and retry" from "sign in again". */
+  if (isOperational && error.code) {
+    body.code = error.code;
+  }
+  /** A wait the caller can actually count down, as a header and in the body. */
+  if (isOperational && error.retryAfterSeconds !== undefined) {
+    res.set('Retry-After', String(error.retryAfterSeconds));
+    body.retryAfterSeconds = error.retryAfterSeconds;
+  }
   /** The stack is useful while developing and dangerous in production. */
   if (!env.isProduction && !isOperational) {
     body.stack = error.stack;

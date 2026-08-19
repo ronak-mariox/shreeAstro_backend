@@ -1,0 +1,1699 @@
+{
+  "info": {
+    "_postman_id": "d8200160-b367-4508-ad86-4ce4c73c89f8",
+    "name": "Shree Astro \u2014 User App",
+    "description": "Everything **user_app** calls.\n\n## Start here\n1. Select the **Shree Astro \u2014 Local** environment (top right).\n2. Run *2 \u00b7 Account \u2192 Register*. Tokens are saved for you.\n3. Work down the folders in order \u2014 each one fills in the ids the next needs.\n\n## Signing in without registering\n*Request login OTP* saves the code to `{{devCode}}`, so *Verify OTP* works with no copying. Or put `{{masterOtp}}` (123456) in the code field \u2014 it works for any account while there is no SMS provider.\n\n## Auth\nEvery request inherits `Authorization: Bearer {{userAccessToken}}` from this collection. Requests that must be anonymous override it themselves.\n\nA 401 with `code: \"token_expired\"` means *refresh and retry* \u2014 run *Refresh tokens*. Any other 401 means sign in again.\n\n## Before the directory has anyone in it\nOnly approved astrologers are listed. Register one with the Astrologer App collection and approve it with the Admin Panel collection first.",
+    "schema": "https://schema.getpostman.com/json/collection/v2.1.0/collection.json"
+  },
+  "auth": {
+    "type": "bearer",
+    "bearer": [
+      {
+        "key": "token",
+        "value": "{{userAccessToken}}",
+        "type": "string"
+      }
+    ]
+  },
+  "variable": [
+    {
+      "key": "baseUrl",
+      "value": "http://localhost:5000/api/v1"
+    }
+  ],
+  "item": [
+    {
+      "name": "1 \u00b7 Getting started",
+      "item": [
+        {
+          "name": "Health check",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/../../health",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "..",
+                "..",
+                "health"
+              ]
+            },
+            "description": "Is the server up and is Mongo connected? Note this one sits outside /api/v1.",
+            "auth": {
+              "type": "noauth"
+            }
+          },
+          "response": []
+        },
+        {
+          "name": "Platform settings",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/settings",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "settings"
+              ]
+            },
+            "description": "Read this on launch. Recharge limits, free trial minutes, which features are switched on, the app versions to check against, and the support contact.\n\nOpen \u2014 the app needs it before anyone has signed in. It deliberately does **not** include the commission or anything else about the business.",
+            "auth": {
+              "type": "noauth"
+            }
+          },
+          "response": [],
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test(\"request succeeded\", () => pm.expect(pm.response.code).to.be.oneOf([200, 201]));"
+                ]
+              }
+            }
+          ]
+        }
+      ],
+      "description": "Check the server is up before anything else."
+    },
+    {
+      "name": "2 \u00b7 Account",
+      "item": [
+        {
+          "name": "Register (Create Account)",
+          "request": {
+            "method": "POST",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/auth/register",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "auth",
+                "register"
+              ]
+            },
+            "description": "The seeker app's two-step wizard, sent as one request \u2014 both steps arrive together so an account is only ever created complete.\n\nSent as `multipart/form-data` because it carries the profile photo. Tick the `photo` row to attach one; it is optional.\n\nRefusals: 409 if the email or number is already registered, 422 with per-field messages if anything is malformed.",
+            "body": {
+              "mode": "formdata",
+              "formdata": [
+                {
+                  "key": "fullName",
+                  "value": "Arjun Sharma",
+                  "type": "text",
+                  "description": ""
+                },
+                {
+                  "key": "email",
+                  "value": "arjun@example.com",
+                  "type": "text",
+                  "description": ""
+                },
+                {
+                  "key": "phone",
+                  "value": "9876543210",
+                  "type": "text",
+                  "description": "10 digits, no country code"
+                },
+                {
+                  "key": "gender",
+                  "value": "male",
+                  "type": "text",
+                  "description": "male | female | other"
+                },
+                {
+                  "key": "dateOfBirth",
+                  "value": "15/08/1995",
+                  "type": "text",
+                  "description": "DD/MM/YYYY"
+                },
+                {
+                  "key": "timeOfBirth",
+                  "value": "04:20 AM",
+                  "type": "text",
+                  "description": "HH:MM AM/PM, or 24-hour HH:MM"
+                },
+                {
+                  "key": "placeOfBirth",
+                  "value": "Jaipur, Rajasthan",
+                  "type": "text",
+                  "description": ""
+                },
+                {
+                  "key": "photo",
+                  "type": "file",
+                  "src": [],
+                  "description": "Optional. JPEG/PNG/WebP/HEIC, max 5 MB.",
+                  "disabled": true
+                }
+              ]
+            },
+            "auth": {
+              "type": "noauth"
+            }
+          },
+          "response": [],
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "const save = (k, v) => (pm.environment.name ? pm.environment.set(k, v) : pm.collectionVariables.set(k, v));",
+                  "pm.test(\"account created\", () => pm.response.to.have.status(201));",
+                  "const body = pm.response.json();",
+                  "save(\"userAccessToken\", body.accessToken);",
+                  "save(\"userRefreshToken\", body.refreshToken);",
+                  "save(\"userId\", body.user.id);",
+                  "save(\"otpPhone\", \"9876543210\");"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "1. Request login OTP",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/auth/login/otp/request",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "auth",
+                "login",
+                "otp",
+                "request"
+              ]
+            },
+            "description": "Sends a 6-digit code.\n\nNo SMS/email provider is wired up yet, so outside production the real code comes back as `devCode` and is also printed to the server log. This request saves it to `{{devCode}}`, so the next request works without copying anything.\n\n`role` says which app is asking. `channel` is `phone` or `email`.\n\nRefusals: 404 `account_not_found` (not registered \u2014 send them to Register), 403 `account_blocked`, 429 `otp_cooldown` (a code was sent less than 30s ago; `retryAfterSeconds` says how long to wait).",
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"role\": \"user\",\n  \"channel\": \"phone\",\n  \"phone\": \"{{otpPhone}}\"\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            },
+            "auth": {
+              "type": "noauth"
+            }
+          },
+          "response": [],
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "const save = (k, v) => (pm.environment.name ? pm.environment.set(k, v) : pm.collectionVariables.set(k, v));",
+                  "pm.test(\"code sent\", () => pm.response.to.have.status(200));",
+                  "const body = pm.response.json();",
+                  "if (body.devCode) {",
+                  "  save(\"devCode\", body.devCode);",
+                  "  console.log(\"OTP:\", body.devCode);",
+                  "}"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "2. Verify OTP and sign in",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/auth/login/otp/verify",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "auth",
+                "login",
+                "otp",
+                "verify"
+              ]
+            },
+            "description": "Trades the code for a session and saves both tokens.\n\n`{{devCode}}` was filled in by the previous request. `{{masterOtp}}` (123456) also works for any account while there is no SMS provider \u2014 swap it in to skip step 1 entirely.\n\nRefusals: 400 wrong code (the message says how many attempts are left), 400 expired, 429 `otp_attempts_exceeded` after 5 wrong guesses \u2014 a resend clears the lockout.",
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"role\": \"user\",\n  \"channel\": \"phone\",\n  \"phone\": \"{{otpPhone}}\",\n  \"code\": \"{{devCode}}\"\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            },
+            "auth": {
+              "type": "noauth"
+            }
+          },
+          "response": [],
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "const save = (k, v) => (pm.environment.name ? pm.environment.set(k, v) : pm.collectionVariables.set(k, v));",
+                  "pm.test(\"request succeeded\", () => pm.expect(pm.response.code).to.be.oneOf([200, 201]));",
+                  "const body = pm.response.json();",
+                  "save(\"userAccessToken\", body.accessToken);",
+                  "save(\"userRefreshToken\", body.refreshToken);",
+                  "save(\"userId\", body.user.id);"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "Sign in by email instead",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/auth/login/otp/request",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "auth",
+                "login",
+                "otp",
+                "request"
+              ]
+            },
+            "description": "The same flow with `channel: \"email\"` \u2014 this is what the app's Continue with Email screen sends.",
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"role\": \"user\",\n  \"channel\": \"email\",\n  \"email\": \"{{otpEmail}}\"\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            },
+            "auth": {
+              "type": "noauth"
+            }
+          },
+          "response": [],
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "const save = (k, v) => (pm.environment.name ? pm.environment.set(k, v) : pm.collectionVariables.set(k, v));",
+                  "const body = pm.response.json();",
+                  "if (body.devCode) save(\"devCode\", body.devCode);"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "Refresh tokens",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/auth/refresh",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "auth",
+                "refresh"
+              ]
+            },
+            "description": "Call this when a request answers 401 with `code: \"token_expired\"` \u2014 that means refresh and retry, not sign out. Any other 401 means the session is dead.\n\nA browser sends the cookie automatically; the apps post the refresh token in the body.",
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"refreshToken\": \"{{userRefreshToken}}\"\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            },
+            "auth": {
+              "type": "noauth"
+            }
+          },
+          "response": [],
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "const save = (k, v) => (pm.environment.name ? pm.environment.set(k, v) : pm.collectionVariables.set(k, v));",
+                  "pm.test(\"request succeeded\", () => pm.expect(pm.response.code).to.be.oneOf([200, 201]));",
+                  "const body = pm.response.json();",
+                  "save(\"userAccessToken\", body.accessToken);",
+                  "save(\"userRefreshToken\", body.refreshToken);"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "Logout",
+          "request": {
+            "method": "POST",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/auth/logout",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "auth",
+                "logout"
+              ]
+            },
+            "description": "Clears the cookies the admin panel uses. The apps hold no cookies, so signing out there is a local act: delete both tokens from the keystore. Tokens stay valid until they expire."
+          },
+          "response": []
+        },
+        {
+          "name": "Who am I",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/auth/me",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "auth",
+                "me"
+              ]
+            },
+            "description": "The signed-in account, shaped by whichever role the token carries."
+          },
+          "response": [],
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test(\"request succeeded\", () => pm.expect(pm.response.code).to.be.oneOf([200, 201]));"
+                ]
+              }
+            }
+          ]
+        }
+      ],
+      "description": "Register once, then sign in with a code. Tokens are saved automatically."
+    },
+    {
+      "name": "3 \u00b7 My profile",
+      "item": [
+        {
+          "name": "Home screen",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/users/me/home",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "users",
+                "me",
+                "home"
+              ]
+            },
+            "description": "Everything the home screen prints, in one call \u2014 the greeting, the wallet, today's horoscope for the seeker's sign, where the planets are, and the last three consultations.\n\n`horoscope` is null until birth details are on file, which is the app's cue to nudge for them."
+          },
+          "response": [],
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test(\"request succeeded\", () => pm.expect(pm.response.code).to.be.oneOf([200, 201]));"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "Get my profile",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/users/me",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "users",
+                "me"
+              ]
+            },
+            "description": "Everything the Profile screen prints: identity, birth details, wallet, stats, and the unread badge."
+          },
+          "response": [],
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test(\"request succeeded\", () => pm.expect(pm.response.code).to.be.oneOf([200, 201]));"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "Update my profile",
+          "request": {
+            "method": "PATCH",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/users/me",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "users",
+                "me"
+              ]
+            },
+            "description": "Edit Profile. Every field is optional \u2014 send only what changed.\n\nMultipart, so a new photo can ride along. Changing the email marks it unverified again. The **phone number cannot be changed here** \u2014 that needs proving the new number with its own OTP.",
+            "body": {
+              "mode": "formdata",
+              "formdata": [
+                {
+                  "key": "fullName",
+                  "value": "Arjun Sharma",
+                  "type": "text",
+                  "description": ""
+                },
+                {
+                  "key": "email",
+                  "value": "arjun.new@example.com",
+                  "type": "text",
+                  "description": ""
+                },
+                {
+                  "key": "gender",
+                  "value": "male",
+                  "type": "text",
+                  "description": ""
+                },
+                {
+                  "key": "dateOfBirth",
+                  "value": "15/08/1995",
+                  "type": "text",
+                  "description": ""
+                },
+                {
+                  "key": "timeOfBirth",
+                  "value": "04:20 AM",
+                  "type": "text",
+                  "description": ""
+                },
+                {
+                  "key": "placeOfBirth",
+                  "value": "Jaipur, Rajasthan",
+                  "type": "text",
+                  "description": ""
+                },
+                {
+                  "key": "photo",
+                  "type": "file",
+                  "src": [],
+                  "description": "",
+                  "disabled": true
+                }
+              ]
+            }
+          },
+          "response": []
+        },
+        {
+          "name": "Notification preferences",
+          "request": {
+            "method": "PATCH",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/users/me/notification-prefs",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "users",
+                "me",
+                "notification-prefs"
+              ]
+            },
+            "description": "Which alerts stay switched on.",
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"push\": true,\n  \"email\": true,\n  \"sms\": false,\n  \"whatsapp\": false,\n  \"dailyHoroscope\": true,\n  \"promotions\": false\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            }
+          },
+          "response": []
+        }
+      ],
+      "description": ""
+    },
+    {
+      "name": "4 \u00b7 Kundli",
+      "item": [
+        {
+          "name": "List saved charts",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/users/me/kundlis",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "users",
+                "me",
+                "kundlis"
+              ]
+            },
+            "description": "Newest first."
+          },
+          "response": [],
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "const save = (k, v) => (pm.environment.name ? pm.environment.set(k, v) : pm.collectionVariables.set(k, v));",
+                  "pm.test(\"request succeeded\", () => pm.expect(pm.response.code).to.be.oneOf([200, 201]));",
+                  "const items = pm.response.json().items || [];",
+                  "if (items.length) save(\"kundliId\", items[0]._id);"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "Save a chart",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/users/me/kundlis",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "users",
+                "me",
+                "kundlis"
+              ]
+            },
+            "description": "There is no ephemeris wired up yet, so `chart` is whatever the client computed and is stored as-is. When a provider lands it will be computed server-side instead \u2014 see `saveKundli` in services/user.service.js.\n\n`relation` is `self`, `partner`, `family` or `other`.",
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"label\": \"My chart\",\n  \"relation\": \"self\",\n  \"fullName\": \"Arjun Sharma\",\n  \"gender\": \"male\",\n  \"dateOfBirth\": \"15/08/1995\",\n  \"timeOfBirth\": \"04:20 AM\",\n  \"placeOfBirth\": \"Jaipur, Rajasthan\",\n  \"chart\": {\n    \"note\": \"whatever the client computed\"\n  }\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            }
+          },
+          "response": [],
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "const save = (k, v) => (pm.environment.name ? pm.environment.set(k, v) : pm.collectionVariables.set(k, v));",
+                  "pm.test(\"saved\", () => pm.response.to.have.status(201));",
+                  "save(\"kundliId\", pm.response.json().kundli._id);"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "Delete a chart",
+          "request": {
+            "method": "DELETE",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/users/me/kundlis/{{kundliId}}",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "users",
+                "me",
+                "kundlis",
+                "{{kundliId}}"
+              ]
+            },
+            "description": ""
+          },
+          "response": []
+        }
+      ],
+      "description": ""
+    },
+    {
+      "name": "5 \u00b7 Find astrologers",
+      "item": [
+        {
+          "name": "Browse the directory",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/astrologers?page=1&limit=20",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "astrologers"
+              ],
+              "query": [
+                {
+                  "key": "page",
+                  "value": "1",
+                  "description": "",
+                  "disabled": false
+                },
+                {
+                  "key": "limit",
+                  "value": "20",
+                  "description": "",
+                  "disabled": false
+                },
+                {
+                  "key": "search",
+                  "value": "Rajesh",
+                  "description": "Matches on name",
+                  "disabled": true
+                },
+                {
+                  "key": "expertise",
+                  "value": "vedic,tarot",
+                  "description": "Comma-separated ids from models/constants.js",
+                  "disabled": true
+                },
+                {
+                  "key": "languages",
+                  "value": "hindi,english",
+                  "description": "Comma-separated",
+                  "disabled": true
+                },
+                {
+                  "key": "online",
+                  "value": "true",
+                  "description": "Only astrologers who are online now",
+                  "disabled": true
+                },
+                {
+                  "key": "minExperience",
+                  "value": "5",
+                  "description": "Years",
+                  "disabled": true
+                },
+                {
+                  "key": "maxRate",
+                  "value": "30",
+                  "description": "Rupees per minute",
+                  "disabled": true
+                },
+                {
+                  "key": "minRating",
+                  "value": "4",
+                  "description": "Out of 5",
+                  "disabled": true
+                },
+                {
+                  "key": "gender",
+                  "value": "male",
+                  "description": "",
+                  "disabled": true
+                },
+                {
+                  "key": "badges",
+                  "value": "celebrity,top-choice",
+                  "description": "",
+                  "disabled": true
+                },
+                {
+                  "key": "sort",
+                  "value": "rating",
+                  "description": "recommended | rating | experience | price_low | price_high | popular",
+                  "disabled": true
+                }
+              ]
+            },
+            "description": "The Find Astrologers screen, and everything the Sort & Filter sheet sends. All filters are optional \u2014 the disabled rows are examples, tick one to try it.\n\nOnly **approved and active** astrologers ever appear here, so an empty list on a fresh database usually means nobody has been approved in the admin panel yet."
+          },
+          "response": [],
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "const save = (k, v) => (pm.environment.name ? pm.environment.set(k, v) : pm.collectionVariables.set(k, v));",
+                  "pm.test(\"request succeeded\", () => pm.expect(pm.response.code).to.be.oneOf([200, 201]));",
+                  "const items = pm.response.json().items || [];",
+                  "if (items.length) save(\"astrologerId\", items[0].id);",
+                  "pm.test(\"directory returned rows\", () => pm.expect(items.length).to.be.above(0));"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "Astrologer profile",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/astrologers/{{astrologerId}}",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "astrologers",
+                "{{astrologerId}}"
+              ]
+            },
+            "description": "The detail screen: rates, about, specialisations, rating histogram and the ten most recent reviews."
+          },
+          "response": [],
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test(\"request succeeded\", () => pm.expect(pm.response.code).to.be.oneOf([200, 201]));"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "More reviews",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/astrologers/{{astrologerId}}/reviews?page=1&limit=20",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "astrologers",
+                "{{astrologerId}}",
+                "reviews"
+              ],
+              "query": [
+                {
+                  "key": "page",
+                  "value": "1",
+                  "description": "",
+                  "disabled": false
+                },
+                {
+                  "key": "limit",
+                  "value": "20",
+                  "description": "",
+                  "disabled": false
+                }
+              ]
+            },
+            "description": "Reviews are stored on the consultation they came from \u2014 a review only exists because a session did."
+          },
+          "response": []
+        },
+        {
+          "name": "Favourite / unfavourite",
+          "request": {
+            "method": "POST",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/users/me/favourites/{{astrologerId}}",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "users",
+                "me",
+                "favourites",
+                "{{astrologerId}}"
+              ]
+            },
+            "description": "It toggles. The answer says which way it went."
+          },
+          "response": []
+        },
+        {
+          "name": "My favourites",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/users/me/favourites",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "users",
+                "me",
+                "favourites"
+              ]
+            },
+            "description": "The same card shape as the directory."
+          },
+          "response": []
+        }
+      ],
+      "description": ""
+    },
+    {
+      "name": "6 \u00b7 Wallet",
+      "item": [
+        {
+          "name": "My wallet",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/wallet",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "wallet"
+              ]
+            },
+            "description": "Balance, total added, total spent."
+          },
+          "response": [],
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test(\"request succeeded\", () => pm.expect(pm.response.code).to.be.oneOf([200, 201]));"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "Add money \u2014 step 1",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/wallet/topup",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "wallet",
+                "topup"
+              ]
+            },
+            "description": "Starts a top-up and records it as **pending** \u2014 no money has moved yet.\n\nThere is no payment gateway wired up, so this returns an order the app can confirm straight away. Wire Razorpay into `startTopUp` in services/wallet.service.js when you are ready.\n\nMinimum \u20b910, maximum \u20b91,00,000.",
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"amount\": 500\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            }
+          },
+          "response": [],
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "const save = (k, v) => (pm.environment.name ? pm.environment.set(k, v) : pm.collectionVariables.set(k, v));",
+                  "pm.test(\"order created\", () => pm.response.to.have.status(201));",
+                  "save(\"topupTransactionId\", pm.response.json().transactionId);"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "Add money \u2014 step 2 (confirm)",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/wallet/topup/confirm",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "wallet",
+                "topup",
+                "confirm"
+              ]
+            },
+            "description": "Marks the pending row successful and credits the wallet.\n\nSafe to call twice \u2014 the second call returns the same row rather than crediting again. When a real gateway is added, verify its signature before this runs.",
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"transactionId\": \"{{topupTransactionId}}\",\n  \"paymentId\": \"pay_test_1\"\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            }
+          },
+          "response": [],
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test(\"request succeeded\", () => pm.expect(pm.response.code).to.be.oneOf([200, 201]));"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "Transaction history",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/wallet/transactions?filter=all&page=1&limit=20",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "wallet",
+                "transactions"
+              ],
+              "query": [
+                {
+                  "key": "filter",
+                  "value": "all",
+                  "description": "all | added | spent \u2014 the ledger's three tabs",
+                  "disabled": false
+                },
+                {
+                  "key": "page",
+                  "value": "1",
+                  "description": "",
+                  "disabled": false
+                },
+                {
+                  "key": "limit",
+                  "value": "20",
+                  "description": "",
+                  "disabled": false
+                }
+              ]
+            },
+            "description": "Newest first. Every row carries a `reference` the app prints."
+          },
+          "response": []
+        }
+      ],
+      "description": ""
+    },
+    {
+      "name": "7 \u00b7 Consultation",
+      "item": [
+        {
+          "name": "1. Request a chat",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/chats",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "chats"
+              ]
+            },
+            "description": "What the Chat Intake screen sends.\n\nThree checks run in order: the astrologer can take work, you can afford at least a minute, and you do not already have a chat open with them.\n\n**The rate is fixed here**, so a price change mid-chat cannot affect what you pay. `freeMinutes` is the larger of the platform's first-consultation offer and whatever this astrologer grants \u2014 with free minutes available, an empty wallet is not a blocker.\n\n`topic` must be one of the ids in models/constants.js.",
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"astrologerId\": \"{{astrologerId}}\",\n  \"channel\": \"chat\",\n  \"intake\": {\n    \"topic\": \"career-job\",\n    \"question\": \"When will I change jobs?\",\n    \"minutes\": 10\n  }\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            }
+          },
+          "response": [],
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "const save = (k, v) => (pm.environment.name ? pm.environment.set(k, v) : pm.collectionVariables.set(k, v));",
+                  "pm.test(\"request created\", () => pm.response.to.have.status(201));",
+                  "save(\"chatId\", pm.response.json().chatId);"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "Cancel the request",
+          "request": {
+            "method": "POST",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/chats/{{chatId}}/cancel",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "chats",
+                "{{chatId}}",
+                "cancel"
+              ]
+            },
+            "description": "Give up before the astrologer answered. Only works while the status is still `requested`."
+          },
+          "response": []
+        },
+        {
+          "name": "My consultations",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/chats?page=1&limit=20",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "chats"
+              ],
+              "query": [
+                {
+                  "key": "status",
+                  "value": "ended",
+                  "description": "requested | active | ended | rejected | cancelled",
+                  "disabled": true
+                },
+                {
+                  "key": "page",
+                  "value": "1",
+                  "description": "",
+                  "disabled": false
+                },
+                {
+                  "key": "limit",
+                  "value": "20",
+                  "description": "",
+                  "disabled": false
+                }
+              ]
+            },
+            "description": "Consultation History. Each row carries the last message, the unread count and what it cost."
+          },
+          "response": [],
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "const save = (k, v) => (pm.environment.name ? pm.environment.set(k, v) : pm.collectionVariables.set(k, v));",
+                  "pm.test(\"request succeeded\", () => pm.expect(pm.response.code).to.be.oneOf([200, 201]));",
+                  "const items = pm.response.json().items || [];",
+                  "if (items.length) save(\"chatId\", items[0].id);"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "Read the transcript",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/chats/{{chatId}}/messages?limit=30",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "chats",
+                "{{chatId}}",
+                "messages"
+              ],
+              "query": [
+                {
+                  "key": "limit",
+                  "value": "30",
+                  "description": "",
+                  "disabled": false
+                },
+                {
+                  "key": "beforeSeq",
+                  "value": "10",
+                  "description": "The seq of the oldest message you hold \u2014 pages backwards",
+                  "disabled": true
+                }
+              ]
+            },
+            "description": "Oldest first. The socket is the normal way to receive messages; this is how the screen fills in when it opens."
+          },
+          "response": [],
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test(\"request succeeded\", () => pm.expect(pm.response.code).to.be.oneOf([200, 201]));"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "Send a message",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/chats/{{chatId}}/messages",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "chats",
+                "{{chatId}}",
+                "messages"
+              ]
+            },
+            "description": "A fallback for sending without a socket \u2014 the socket path is the normal one. It still broadcasts, so the other side sees it live.\n\nOnly `text` is enabled right now; `image`, `audio`, `video` and `file` are defined but refused (400). Turn one on with `ENABLED_TYPES` in models/Chat.js.\n\n`clientMessageId` makes a retry safe \u2014 resending the same id returns the message already stored instead of a duplicate.",
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"type\": \"text\",\n  \"content\": {\n    \"text\": \"Namaste \\ud83d\\ude4f\"\n  },\n  \"clientMessageId\": \"{{$guid}}\"\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            }
+          },
+          "response": [],
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test(\"request succeeded\", () => pm.expect(pm.response.code).to.be.oneOf([200, 201]));"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "End the chat",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/chats/{{chatId}}/end",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "chats",
+                "{{chatId}}",
+                "end"
+              ]
+            },
+            "description": "Either side may end it. This is where the money moves:\n\n1. duration is rounded **up** to the whole minute\n2. free minutes come off\n3. the rest is debited from the wallet\n4. the astrologer is credited that, less commission\n\nThe answer carries the duration, what was charged and what the astrologer earned.",
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"reason\": \"Done for now\"\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            }
+          },
+          "response": [],
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test(\"request succeeded\", () => pm.expect(pm.response.code).to.be.oneOf([200, 201]));"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "Rate it",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/chats/{{chatId}}/rate",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "chats",
+                "{{chatId}}",
+                "rate"
+              ]
+            },
+            "description": "Only after it has ended, and only once (409 on a second try). The rating rolls into the astrologer's public average immediately.",
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"rating\": 5,\n  \"comment\": \"Very accurate reading.\"\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            }
+          },
+          "response": [],
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test(\"request succeeded\", () => pm.expect(pm.response.code).to.be.oneOf([200, 201]));"
+                ]
+              }
+            }
+          ]
+        }
+      ],
+      "description": "The whole consultation, in the order the app does it."
+    },
+    {
+      "name": "8 \u00b7 Horoscope",
+      "item": [
+        {
+          "name": "Today's horoscope",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/horoscope?",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "horoscope"
+              ],
+              "query": [
+                {
+                  "key": "sign",
+                  "value": "Leo",
+                  "description": "One sign; omit for all twelve plus the planets",
+                  "disabled": true
+                }
+              ]
+            },
+            "description": "Open, so the app can show a reading before anyone signs in.\n\nThe same sign gets the same reading all day and a different one tomorrow. No astrology provider is connected yet \u2014 see services/horoscope.service.js for where it plugs in.",
+            "auth": {
+              "type": "noauth"
+            }
+          },
+          "response": [],
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test(\"request succeeded\", () => pm.expect(pm.response.code).to.be.oneOf([200, 201]));"
+                ]
+              }
+            }
+          ]
+        }
+      ],
+      "description": ""
+    },
+    {
+      "name": "9 \u00b7 AI assistant",
+      "item": [
+        {
+          "name": "Open the thread",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/chats/ai?limit=50",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "chats",
+                "ai"
+              ],
+              "query": [
+                {
+                  "key": "limit",
+                  "value": "50",
+                  "description": "",
+                  "disabled": false
+                }
+              ]
+            },
+            "description": "One thread per seeker, kept forever, so the conversation is still there when they come back. The first call opens it with the assistant's greeting already in place.\n\nIt is an ordinary chat with `type: 'ai'` and nobody on the other end, so the same message model and ordering apply. It is free \u2014 nothing is ever billed."
+          },
+          "response": [],
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "const save = (k, v) => (pm.environment.name ? pm.environment.set(k, v) : pm.collectionVariables.set(k, v));",
+                  "pm.test(\"request succeeded\", () => pm.expect(pm.response.code).to.be.oneOf([200, 201]));",
+                  "save(\"aiChatId\", pm.response.json().chatId);"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "Ask a question",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/chats/ai/messages",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "chats",
+                "ai",
+                "messages"
+              ]
+            },
+            "description": "Returns **both** turns \u2014 the question and the answer \u2014 so the screen can append them together.\n\nNo AI provider is connected yet, so the answer is a holding reply. See `generateAiReply` in services/chat.service.js.",
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"text\": \"What does my Jupiter placement mean?\",\n  \"clientMessageId\": \"{{$guid}}\"\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            }
+          },
+          "response": [],
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test(\"request succeeded\", () => pm.expect(pm.response.code).to.be.oneOf([200, 201]));"
+                ]
+              }
+            }
+          ]
+        }
+      ],
+      "description": ""
+    },
+    {
+      "name": "10 \u00b7 Help & support",
+      "item": [
+        {
+          "name": "Raise a ticket",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/support/tickets",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "support",
+                "tickets"
+              ]
+            },
+            "description": "`issueType`: `astrologer`, `puja`, `product`, `donation`, `payment` or `other`. Pass `chatId` to dispute a consultation.",
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"issueType\": \"astrologer\",\n  \"description\": \"The astrologer left the chat without answering.\",\n  \"chatId\": \"{{chatId}}\"\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            }
+          },
+          "response": [],
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test(\"request succeeded\", () => pm.expect(pm.response.code).to.be.oneOf([200, 201]));"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "My tickets",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/support/tickets",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "support",
+                "tickets"
+              ]
+            },
+            "description": ""
+          },
+          "response": []
+        }
+      ],
+      "description": ""
+    },
+    {
+      "name": "Notifications",
+      "item": [
+        {
+          "name": "List notifications",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/notifications?page=1&limit=20",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "notifications"
+              ],
+              "query": [
+                {
+                  "key": "page",
+                  "value": "1",
+                  "description": "",
+                  "disabled": false
+                },
+                {
+                  "key": "limit",
+                  "value": "20",
+                  "description": "",
+                  "disabled": false
+                }
+              ]
+            },
+            "description": "Newest first, with an unread count. The role on the token decides whose notifications come back."
+          },
+          "response": [],
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "const save = (k, v) => (pm.environment.name ? pm.environment.set(k, v) : pm.collectionVariables.set(k, v));",
+                  "pm.test(\"request succeeded\", () => pm.expect(pm.response.code).to.be.oneOf([200, 201]));",
+                  "const items = pm.response.json().items || [];",
+                  "if (items.length) save(\"notificationId\", items[0]._id);"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "Mark read",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/notifications/read",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "notifications",
+                "read"
+              ]
+            },
+            "description": "Pass a `notificationId` to mark one, or send `{}` to mark them all.",
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"notificationId\": \"{{notificationId}}\"\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            }
+          },
+          "response": []
+        }
+      ],
+      "description": "Both apps call these two \u2014 the token decides whose alerts come back."
+    }
+  ]
+}
