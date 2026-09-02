@@ -7,6 +7,7 @@ const multer = require('multer');
 
 const ApiError = require('../utils/ApiError');
 const env = require('../config/env');
+const { MAX_UPLOAD_MB } = require('../config/constants');
 
 /** Nothing matched, so the route does not exist. */
 function notFound(req, res, next) {
@@ -24,7 +25,7 @@ function errorHandler(error, req, res, next) {
   if (error instanceof multer.MulterError) {
     const message =
       error.code === 'LIMIT_FILE_SIZE'
-        ? `That image is too large — keep it under ${env.maxUploadMb} MB.`
+        ? `That image is too large — keep it under ${MAX_UPLOAD_MB} MB.`
         : 'That upload could not be accepted.';
     const status = error.code === 'LIMIT_FILE_SIZE' ? 413 : 400;
     res.status(status).json({ error: message, fields: { photo: message } });

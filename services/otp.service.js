@@ -25,6 +25,7 @@
 const crypto = require('crypto');
 
 const env = require('../config/env');
+const { OTP_TTL_SECONDS, OTP_RESEND_SECONDS, OTP_MAX_ATTEMPTS } = require('../config/constants');
 const { redis } = require('../config/redis');
 
 const OTP_LENGTH = 6;
@@ -89,14 +90,14 @@ async function sendOtp({ channel, destination, purpose = 'login' }) {
     codeKey(purpose, channel, destination),
     JSON.stringify({ codeHash: hashCode(code), attempts: 0 }),
     'EX',
-    env.otp.ttlSeconds,
+    OTP_TTL_SECONDS,
   );
 
-  await redis.set(cooldown, '1', 'EX', env.otp.resendSeconds);
+  await redis.set(cooldown, '1', 'EX', OTP_RESEND_SECONDS);
 
   return {
-    expiresInSeconds: env.otp.ttlSeconds,
-    resendInSeconds: env.otp.resendSeconds,
+    expiresInSeconds: OTP_TTL_SECONDS,
+    resendInSeconds: OTP_RESEND_SECONDS,
     /** Development only — see the note at the top of this file. */
     devCode: env.isProduction ? undefined : code,
   };
@@ -128,7 +129,7 @@ async function verifyOtp({ channel, destination, code, purpose = 'login' }) {
 
   const record = JSON.parse(stored);
 
-  if (record.attempts >= env.otp.maxAttempts) {
+  if (record.attempts >= OTP_MAX_ATTEMPTS) {
     return { ok: false, reason: 'attempts_exceeded' };
   }
 
@@ -146,7 +147,7 @@ async function verifyOtp({ channel, destination, code, purpose = 'login' }) {
     return {
       ok: false,
       reason: 'invalid',
-      attemptsLeft: Math.max(env.otp.maxAttempts - record.attempts, 0),
+      attemptsLeft: Math.max(OTP_MAX_ATTEMPTS - record.attempts, 0),
     };
   }
 

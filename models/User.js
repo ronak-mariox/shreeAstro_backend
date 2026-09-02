@@ -17,7 +17,7 @@ const {
 } = require('./common');
 
 const AUTH_PROVIDERS = ['otp', 'email', 'google', 'apple', 'facebook'];
-const USER_STATUS = ['active', 'blocked', 'deleted'];
+const USER_STATUS = ['active', 'blocked'];
 
 /** The wallet the Add Money → Payment → Success flow tops up. */
 const walletSchema = new Schema(
