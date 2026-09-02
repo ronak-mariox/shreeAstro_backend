@@ -32,8 +32,15 @@ const COOKIE_DOMAIN = undefined;
 const COOKIE_SAME_SITE = isProduction ? 'none' : 'lax';
 const COOKIE_SECURE = isProduction;
 
-/** Where uploaded files are written, relative to the backend folder. */
-const UPLOAD_DIR = 'uploads';
+/**
+ * Where uploaded files are written, relative to the backend folder.
+ *
+ * On Vercel the deployed bundle is read-only outside /tmp, and /tmp itself is
+ * wiped between cold starts and not shared across instances — this avoids a
+ * hard crash on upload there, but does not make uploads durable. Real
+ * persistence on Vercel needs object storage (e.g. S3), not local disk.
+ */
+const UPLOAD_DIR = process.env.VERCEL ? '/tmp/uploads' : 'uploads';
 /** Largest image an upload may be, in megabytes. */
 const MAX_UPLOAD_MB = 5;
 
