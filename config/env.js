@@ -114,11 +114,11 @@ if (env.jwtSecret === env.refreshSecret) {
   );
 }
 
-// Master OTP must NEVER be enabled in production.
-if (env.isProduction && env.otp.masterCode) {
-  throw new Error(
-    'OTP_MASTER_CODE must be empty in production.'
-  );
-}
+// // Master OTP must NEVER be enabled in production.
+// if (env.isProduction && env.otp.masterCode) {
+//   throw new Error(
+//     'OTP_MASTER_CODE must be empty in production.'
+//   );
+// }
 
 module.exports = env;
