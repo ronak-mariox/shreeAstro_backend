@@ -10,11 +10,12 @@ const fs = require('fs');
 const path = require('path');
 
 const env = require('../config/env');
+const { UPLOAD_DIR } = require('../config/constants');
 
 /** Absolute path of the upload directory, created on first use. */
-const uploadRoot = path.isAbsolute(env.uploadDir)
-  ? env.uploadDir
-  : path.join(__dirname, '..', env.uploadDir);
+const uploadRoot = path.isAbsolute(UPLOAD_DIR)
+  ? UPLOAD_DIR
+  : path.join(__dirname, '..', UPLOAD_DIR);
 
 function ensureUploadDir(subdirectory = '') {
   const target = path.join(uploadRoot, subdirectory);

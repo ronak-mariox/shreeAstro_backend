@@ -14,7 +14,7 @@ const path = require('path');
 
 const multer = require('multer');
 
-const env = require('../config/env');
+const { MAX_UPLOAD_MB } = require('../config/constants');
 const ApiError = require('../utils/ApiError');
 const { ensureUploadDir, publicUrlFor } = require('../services/storage.service');
 
@@ -59,7 +59,7 @@ const singleImage = (field, folder) =>
   multer({
     storage: storageFor(folder),
     fileFilter: imageFilter,
-    limits: { fileSize: env.maxUploadMb * 1024 * 1024, files: 1 },
+    limits: { fileSize: MAX_UPLOAD_MB * 1024 * 1024, files: 1 },
   }).single(field);
 
 /**
@@ -114,7 +114,7 @@ const uploadDocument = [
   multer({
     storage: storageFor('documents'),
     fileFilter: documentFilter,
-    limits: { fileSize: env.maxUploadMb * 1024 * 1024, files: 1 },
+    limits: { fileSize: MAX_UPLOAD_MB * 1024 * 1024, files: 1 },
   }).single('file'),
   attachUploadedFile,
 ];

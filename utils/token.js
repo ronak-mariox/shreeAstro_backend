@@ -20,6 +20,7 @@
 const jwt = require('jsonwebtoken');
 
 const env = require('../config/env');
+const { JWT_EXPIRES_IN, JWT_REFRESH_EXPIRES_IN } = require('../config/constants');
 
 const ROLES = ['user', 'astrologer', 'admin'];
 
@@ -39,14 +40,14 @@ function authError(message, code) {
 /** `sub` is the account id, `role` says which app is holding it. */
 function signAccessToken(accountId, role) {
   return jwt.sign({ sub: String(accountId), role, typ: 'access' }, env.jwtSecret, {
-    expiresIn: env.jwtExpiresIn,
+    expiresIn: JWT_EXPIRES_IN,
   });
 }
 
 /** The same two claims, plus `typ` so it cannot pass as an access token. */
 function signRefreshToken(accountId, role) {
   return jwt.sign({ sub: String(accountId), role, typ: 'refresh' }, env.refreshSecret, {
-    expiresIn: env.refreshExpiresIn,
+    expiresIn: JWT_REFRESH_EXPIRES_IN,
   });
 }
 

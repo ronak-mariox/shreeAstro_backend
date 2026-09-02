@@ -9,7 +9,7 @@
 
 const jwt = require('jsonwebtoken');
 
-const env = require('../config/env');
+const { COOKIE_REFRESH_PATH, COOKIE_DOMAIN, COOKIE_SAME_SITE, COOKIE_SECURE } = require('../config/constants');
 const { ACCESS_COOKIE, REFRESH_COOKIE } = require('./token');
 
 /**
@@ -18,13 +18,13 @@ const { ACCESS_COOKIE, REFRESH_COOKIE } = require('./token');
  */
 const baseOptions = {
   httpOnly: true,
-  secure: env.cookie.secure,
-  sameSite: env.cookie.sameSite,
-  domain: env.cookie.domain,
+  secure: COOKIE_SECURE,
+  sameSite: COOKIE_SAME_SITE,
+  domain: COOKIE_DOMAIN,
 };
 
 const accessOptions = { ...baseOptions, path: '/' };
-const refreshOptions = { ...baseOptions, path: env.cookie.refreshPath };
+const refreshOptions = { ...baseOptions, path: COOKIE_REFRESH_PATH };
 
 /**
  * How long the cookie should live, taken from the token it carries, so the two
