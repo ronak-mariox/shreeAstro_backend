@@ -12,6 +12,7 @@
 const adminService = require('../services/admin.service');
 const auditService = require('../services/audit.service');
 const settingsService = require('../services/settings.service');
+const integrationsService = require('../services/integrations.service');
 const supportService = require('../services/support.service');
 const asyncHandler = require('../utils/asyncHandler');
 
@@ -28,6 +29,31 @@ const dashboard = asyncHandler(async (req, res) => {
     adminService.getConsultationMix(Number(req.query.days) || 7),
   ]);
   return res.json({ ...summary, consultationMix: mix });
+});
+
+/* -------------------------------------------------------------------- me */
+
+/**
+ * PATCH /api/v1/admin/me — the signed-in admin's own name and photo. Not an
+ * audited change: this is personal display info, not a platform action.
+ */
+const updateOwnProfile = asyncHandler(async (req, res) => {
+  const admin = await adminService.updateOwnProfile({
+    adminId: req.admin._id,
+    name: req.body.name,
+    avatarUrl: req.uploadedPhotoUrl,
+  });
+
+  return res.json({
+    admin: {
+      id: String(admin._id),
+      name: admin.name,
+      email: admin.email,
+      role: admin.role,
+      permissions: admin.permissions,
+      avatarUrl: admin.avatarUrl,
+    },
+  });
 });
 
 /* ----------------------------------------------------------------- users */
@@ -432,6 +458,45 @@ const updateSettings = asyncHandler(async (req, res) => {
   return res.json({ settings });
 });
 
+/* ------------------------------------------------------ third parties */
+
+/** GET /api/v1/admin/integrations */
+const listIntegrations = asyncHandler(async (req, res) => {
+  return res.json({ integrations: await integrationsService.list() });
+});
+
+/** PUT /api/v1/admin/integrations/:provider */
+const saveIntegration = asyncHandler(async (req, res) => {
+  const integration = await integrationsService.save(req.params.provider, req.body, req.admin);
+
+  await logChange(req, {
+    action: `Updated ${req.params.provider} integration`,
+    area: 'Third parties',
+    target: req.params.provider,
+    /** Never log the credential values themselves — only which fields changed. */
+    details: { fields: Object.keys(req.body || {}) },
+  });
+
+  return res.json({ integration: { provider: integration.provider, enabled: integration.enabled } });
+});
+
+/** PATCH /api/v1/admin/integrations/:provider/enabled */
+const setIntegrationEnabled = asyncHandler(async (req, res) => {
+  const integration = await integrationsService.setEnabled(
+    req.params.provider,
+    req.body.enabled,
+    req.admin,
+  );
+
+  await logChange(req, {
+    action: `${integration.enabled ? 'Enabled' : 'Disabled'} ${req.params.provider} integration`,
+    area: 'Third parties',
+    target: req.params.provider,
+  });
+
+  return res.json({ integration: { provider: integration.provider, enabled: integration.enabled } });
+});
+
 /* ----------------------------------------------------------- admin team */
 
 /** GET /api/v1/admin/team */
@@ -542,12 +607,16 @@ const listAuditLogs = asyncHandler(async (req, res) => {
 
 module.exports = {
   dashboard,
+  updateOwnProfile,
   createAstrologer,
   listWallets,
   adjustWallet,
   endConsultation,
   getSettings,
   updateSettings,
+  listIntegrations,
+  saveIntegration,
+  setIntegrationEnabled,
   listAdmins,
   createAdmin,
   updateAdmin,

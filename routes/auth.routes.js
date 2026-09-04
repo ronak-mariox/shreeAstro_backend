@@ -10,6 +10,8 @@ const {
   validateAstrologerRegister,
   validateLoginOtpRequest,
   validateLoginOtpVerify,
+  validateAppleLogin,
+  validateGoogleLogin,
   validateAdminLogin,
   validateAdminOtp,
 } = require('../validators/auth.validator');
@@ -36,6 +38,12 @@ router.post(
  */
 router.post('/login/otp/request', validateLoginOtpRequest, authController.requestLoginOtp);
 router.post('/login/otp/verify', validateLoginOtpVerify, authController.verifyLoginOtp);
+
+/** Signing in with "Continue with Apple" — user_app only. */
+router.post('/apple', validateAppleLogin, authController.loginApple);
+
+/** Signing in with "Continue with Google" — user_app only. */
+router.post('/google', validateGoogleLogin, authController.loginGoogle);
 
 /**
  * Signing in to the panel: password, then a code to the admin's inbox. The

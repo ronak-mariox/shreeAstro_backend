@@ -84,6 +84,16 @@ const env = {
   },
 
   /**
+   * Encrypts third-party credentials (SMTP password, MSG91 auth key, AWS
+   * secret key, Firebase private key, ...) before they are written to Mongo.
+   * See utils/crypto.js and services/integrations.service.js.
+   */
+  configEncryptionKey: getEnv(
+    'CONFIG_ENCRYPTION_KEY',
+    'dev-only-change-me-config-key'
+  ),
+
+  /**
    * Public URL used for generated/public file URLs.
    */
   publicUrl: process.env.PUBLIC_URL || '',
@@ -114,11 +124,11 @@ if (env.jwtSecret === env.refreshSecret) {
   );
 }
 
-// // Master OTP must NEVER be enabled in production.
-// if (env.isProduction && env.otp.masterCode) {
-//   throw new Error(
-//     'OTP_MASTER_CODE must be empty in production.'
-//   );
-// }
+// Master OTP must NEVER be enabled in production.
+if (env.isProduction && env.otp.masterCode) {
+  throw new Error(
+    'OTP_MASTER_CODE must be empty in production.'
+  );
+}
 
 module.exports = env;

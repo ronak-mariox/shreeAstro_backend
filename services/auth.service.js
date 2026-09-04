@@ -29,6 +29,8 @@ const {
 } = require('../utils/token');
 const otpService = require('./otp.service');
 const settingsService = require('./settings.service');
+const refreshTokenService = require('./refreshToken.service');
+const crypto = require('crypto');
 
 /** Which collection each role's accounts live in. */
 const ACCOUNT_MODELS = {
@@ -249,7 +251,7 @@ function assertCanLogIn(account, { role, channel }) {
     );
   }
 
-  if (account.status === 'blocked' || account.status === 'deleted') {
+  if (!isAccountActive(account, role)) {
     throw ApiError.forbidden('This account is not active.', 'account_blocked');
   }
 
@@ -353,6 +355,159 @@ async function verifyLoginOtp({ role, channel, phone, email, code }) {
   } else {
     account.isEmailVerified = true;
   }
+  account.lastLoginAt = new Date();
+  account.lastActiveAt = new Date();
+  await account.save();
+
+  return account;
+}
+
+/* -------------------------------------------------------------------------- */
+/* Apple / Google Sign-In (user_app only)                                     */
+/* -------------------------------------------------------------------------- */
+
+/**
+ * Opens a bare account for a first-time Apple/Google sign-in.
+ *
+ * Phone and email OTP never auto-register — an unrecognised number or address
+ * is answered `account_not_found` and the app sends the person to Register,
+ * because a code proves nothing about who is asking for it beyond "controls
+ * this phone/inbox right now". Apple and Google are different: the token
+ * itself already vouches for a real, singular identity, so there is nothing
+ * left for a separate Register step to add except the astrology-specific
+ * fields (gender, birth details, ...) neither provider has any reason to
+ * know. So sign-in opens the account on the spot rather than refusing it.
+ *
+ * What gets created is deliberately thin — no gender, no birth details, and
+ * a name only when the provider handed one over (Google usually does; Apple
+ * only ever does on the very first authorization, and only if the client
+ * captured and forwarded it as `fullName`). `UserProfile.completion` reads
+ * that thinness on its own — see the model — which is what the client uses
+ * to route a fresh social sign-in to Edit Profile instead of Home.
+ */
+async function createSocialAccount({ authProvider, providerId, email, emailVerified, fullName }) {
+  const normalisedEmail = email ? String(email).trim().toLowerCase() : undefined;
+  const name = fullName ? String(fullName).trim() : undefined;
+
+  const user = await User.create({
+    name,
+    email: normalisedEmail,
+    authProvider,
+    providerId,
+    isEmailVerified: Boolean(normalisedEmail && emailVerified),
+  });
+
+  const profile = await UserProfile.create({ user: user._id, fullName: name });
+
+  user.profile = profile._id;
+  await user.save();
+
+  return user;
+}
+
+/**
+ * Signs in with an Apple identity token, verified against Apple's own keys
+ * by appleAuth.service.js.
+ *
+ * `fullName` is optional and only ever meaningful on a brand-new account:
+ * Apple hands the client the user's name once, on the very first
+ * authorization, as a separate field alongside the token rather than inside
+ * it — so it only has anything to contribute the one time createSocialAccount
+ * runs. Every later sign-in, and any sign-in the client did not have a name
+ * for, passes nothing here and that is fine.
+ */
+async function loginWithApple({ identityToken, fullName }) {
+  const appleAuthService = require('./appleAuth.service');
+
+  let claims;
+  try {
+    claims = await appleAuthService.verifyIdentityToken(identityToken);
+  } catch (error) {
+    if (error.code === 'apple_not_configured') {
+      throw ApiError.badRequest('Apple Sign-In is not set up yet.', undefined, 'apple_not_configured');
+    }
+    throw ApiError.unauthorized('That Apple sign-in could not be verified.', 'invalid_apple_token');
+  }
+
+  let account = await User.findOne({ authProvider: 'apple', providerId: claims.sub });
+
+  /** First sign-in on a new device for someone who already registered with this email. */
+  if (!account && claims.email) {
+    account = await User.findOne({ email: claims.email.trim().toLowerCase() });
+    if (account && account.authProvider !== 'apple') {
+      account.authProvider = 'apple';
+      account.providerId = claims.sub;
+    }
+  }
+
+  if (!account) {
+    account = await createSocialAccount({
+      authProvider: 'apple',
+      providerId: claims.sub,
+      email: claims.email,
+      emailVerified: claims.emailVerified,
+      fullName,
+    });
+  }
+
+  if (!isAccountActive(account, 'user')) {
+    throw ApiError.forbidden('This account is not active.', 'account_blocked');
+  }
+
+  account.lastLoginAt = new Date();
+  account.lastActiveAt = new Date();
+  await account.save();
+
+  return account;
+}
+
+/**
+ * Signs in with a Google ID token, verified against Google's own keys by
+ * googleAuth.service.js.
+ *
+ * `fullName` is the same escape hatch loginWithApple takes, kept here for
+ * symmetry — Google's ID token usually carries `name` itself (`claims.name`,
+ * used as the fallback below), but not every client requests the scope that
+ * fills it in.
+ */
+async function loginWithGoogle({ idToken, fullName }) {
+  const googleAuthService = require('./googleAuth.service');
+
+  let claims;
+  try {
+    claims = await googleAuthService.verifyIdToken(idToken);
+  } catch (error) {
+    if (error.code === 'google_not_configured') {
+      throw ApiError.badRequest('Google Sign-In is not set up yet.', undefined, 'google_not_configured');
+    }
+    throw ApiError.unauthorized('That Google sign-in could not be verified.', 'invalid_google_token');
+  }
+
+  let account = await User.findOne({ authProvider: 'google', providerId: claims.sub });
+
+  /** First sign-in on a new device for someone who already registered with this (verified) email. */
+  if (!account && claims.email && claims.emailVerified) {
+    account = await User.findOne({ email: claims.email.trim().toLowerCase() });
+    if (account && account.authProvider !== 'google') {
+      account.authProvider = 'google';
+      account.providerId = claims.sub;
+    }
+  }
+
+  if (!account) {
+    account = await createSocialAccount({
+      authProvider: 'google',
+      providerId: claims.sub,
+      email: claims.email,
+      emailVerified: claims.emailVerified,
+      fullName: fullName || claims.name,
+    });
+  }
+
+  if (!isAccountActive(account, 'user')) {
+    throw ApiError.forbidden('This account is not active.', 'account_blocked');
+  }
+
   account.lastLoginAt = new Date();
   account.lastActiveAt = new Date();
   await account.save();
@@ -527,30 +682,56 @@ async function resendAdminOtp({ email }) {
 /* -------------------------------------------------------------------------- */
 
 /**
+ * Whether an account is allowed to hold a session at all.
+ *
+ * Every role's status enum means something slightly different — User and
+ * Astrologer are `active`/`blocked`, Admin is `active`/`inactive`/`suspended`
+ * — so "not active" has to be asked per role rather than against one shared
+ * list of "bad" values, which is the mistake this replaces (see the module
+ * comment history: a blocked/deleted check that Admin's enum never matches
+ * meant a suspended admin could refresh forever).
+ */
+function isAccountActive(account, role) {
+  return role === 'admin'
+    ? account.status === 'active'
+    : account.status !== 'blocked' && account.status !== 'deleted';
+}
+
+/**
  * The pair of tokens that *is* a signed-in client.
  *
- * Nothing is written down server-side, which has one consequence worth saying
- * out loud: a token cannot be taken back before it expires. Signing out clears
- * the client's copy, but a refresh token already copied off a device keeps
- * working until it expires. JWT_REFRESH_EXPIRES_IN is the lever that bounds it.
+ * The access token is stateless, same as always. The refresh token carries a
+ * `jti` that gets recorded in Redis (refreshToken.service.js) the moment it is
+ * minted — that record is what lets sign-out, "sign out everywhere", and a
+ * blocked/suspended account actually take a refresh token back before its
+ * natural expiry, rather than only being able to stop the *next* one.
  */
-function issueTokens(accountId, role) {
+async function issueTokens(accountId, role) {
   if (!ACCOUNT_MODELS[role]) {
     throw new Error(`Cannot issue tokens for role "${role}".`);
   }
 
-  return {
+  const jti = crypto.randomUUID();
+  const tokens = {
     accessToken: signAccessToken(accountId, role),
-    refreshToken: signRefreshToken(accountId, role),
+    refreshToken: signRefreshToken(accountId, role, jti),
   };
+
+  await refreshTokenService.record({ role, accountId: String(accountId), jti });
+
+  return tokens;
 }
 
 /**
  * Trades a refresh token for a fresh pair.
  *
- * The account is re-read on the way through, which is the one late check this
- * flow can still make: blocking an account bites here, within one access
- * token's lifetime.
+ * Three things can refuse this: the signature/expiry (verifyRefreshToken), the
+ * account being gone or no longer active, and — the part a stateless JWT
+ * cannot do alone — the token having already been revoked (signed out,
+ * rotated away by an earlier refresh, or burned by "sign out everywhere").
+ * The old token is revoked here too, so a refresh token is good for exactly
+ * one trade; a copy of an already-spent one is refused just like a signed-out
+ * one would be.
  */
 async function refreshTokens(token) {
   let claims;
@@ -560,15 +741,27 @@ async function refreshTokens(token) {
     throw ApiError.unauthorized(error.message, error.code);
   }
 
+  const active = await refreshTokenService.isActive({
+    role: claims.role,
+    accountId: claims.accountId,
+    jti: claims.jti,
+  });
+  if (!active) {
+    throw ApiError.unauthorized('This session has ended. Please sign in again.', 'session_expired');
+  }
+
   const account = await ACCOUNT_MODELS[claims.role].findById(claims.accountId).select('status');
 
   if (!account) {
+    await refreshTokenService.revoke(claims);
     throw ApiError.unauthorized('This account no longer exists.', 'account_missing');
   }
-  if (account.status === 'blocked' || account.status === 'deleted') {
+  if (!isAccountActive(account, claims.role)) {
+    await refreshTokenService.revoke(claims);
     throw ApiError.forbidden('This account is not active.', 'account_blocked');
   }
 
+  await refreshTokenService.revoke(claims);
   return issueTokens(claims.accountId, claims.role);
 }
 
@@ -577,11 +770,14 @@ module.exports = {
   registerAstrologer,
   requestLoginOtp,
   verifyLoginOtp,
+  loginWithApple,
+  loginWithGoogle,
   loginAdmin,
   verifyAdminOtp,
   resendAdminOtp,
   issueTokens,
   refreshTokens,
+  isAccountActive,
   LOGIN_CHANNELS,
   OTP_ROLES,
   /** Shared with the profile endpoints and the tests. */

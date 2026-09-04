@@ -50,6 +50,7 @@ const confirmTopUp = asyncHandler(async (req, res) => {
     userId: req.account.accountId,
     transactionId: req.body.transactionId,
     paymentId: req.body.paymentId,
+    method: req.body.method,
   });
 
   return res.json({
@@ -59,6 +60,7 @@ const confirmTopUp = asyncHandler(async (req, res) => {
       amount: transaction.amount,
       balanceAfter: transaction.balanceAfter,
       status: transaction.status,
+      method: transaction.payment?.method,
     },
   });
 });

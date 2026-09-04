@@ -572,8 +572,24 @@ async function listChats({ accountId, role, status, page = 1, limit = 20 }) {
   };
 }
 
+/**
+ * Ages a request out to `missed` once it has sat unanswered past the window
+ * the astrologer was shown it in (`REQUEST_TIMEOUT_SECONDS`) — there is no
+ * scheduler in this codebase, so this runs lazily wherever the queue or the
+ * dashboard's pending count is read, rather than on a timer of its own.
+ */
+async function expireStaleRequests(astrologerId) {
+  const cutoff = new Date(Date.now() - REQUEST_TIMEOUT_SECONDS * 1000);
+  await ChatSession.updateMany(
+    { astrologer: astrologerId, status: 'requested', requestedAt: { $lte: cutoff } },
+    { $set: { status: 'missed' } },
+  );
+}
+
 /** The astrologer's incoming-request queue. */
 async function pendingRequests(astrologerId) {
+  await expireStaleRequests(astrologerId);
+
   const rows = await ChatSession.find({ astrologer: astrologerId, status: 'requested' })
     .sort({ requestedAt: -1 })
     .populate('user', 'name avatarUrl');
@@ -670,6 +686,7 @@ module.exports = {
   rateChat,
   listChats,
   pendingRequests,
+  expireStaleRequests,
   getMessages,
   joinChat,
   sendMessage,

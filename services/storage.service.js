@@ -11,6 +11,7 @@ const path = require('path');
 
 const env = require('../config/env');
 const { UPLOAD_DIR } = require('../config/constants');
+const s3Service = require('./s3.service');
 
 /** Absolute path of the upload directory, created on first use. */
 const uploadRoot = path.isAbsolute(UPLOAD_DIR)
@@ -26,13 +27,19 @@ function ensureUploadDir(subdirectory = '') {
 /**
  * The URL a stored file is served from.
  *
- * In production PUBLIC_URL fixes the origin; in development it is taken from
- * the request, because the same server is `10.0.2.2` to an Android emulator and
- * `127.0.0.1` to an iOS one.
+ * An S3-backed upload (see middlewares/upload.middleware.js) already carries
+ * its final public URL in `file.path`, so this only needs to build one for a
+ * local file. In production PUBLIC_URL fixes the origin; in development it is
+ * taken from the request, because the same server is `10.0.2.2` to an Android
+ * emulator and `127.0.0.1` to an iOS one.
  */
 function publicUrlFor(file, req) {
   if (!file) {
     return undefined;
+  }
+
+  if (file.storage === 's3') {
+    return file.path;
   }
 
   const relative = path
@@ -46,7 +53,14 @@ function publicUrlFor(file, req) {
 
 /** Deletes a stored file; used when a write fails after the upload landed. */
 function removeFile(file) {
-  if (file?.path) {
+  if (!file) {
+    return;
+  }
+  if (file.storage === 's3') {
+    s3Service.remove(file.key);
+    return;
+  }
+  if (file.path) {
     fs.promises.unlink(file.path).catch(() => {});
   }
 }

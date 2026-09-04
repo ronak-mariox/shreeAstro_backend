@@ -13,7 +13,11 @@ const express = require('express');
 
 const astrologerController = require('../controllers/astrologer.controller');
 const { authenticate, authorize } = require('../middlewares/auth.middleware');
-const { uploadProfilePhoto, uploadDocument } = require('../middlewares/upload.middleware');
+const {
+  uploadProfilePhoto,
+  uploadGalleryImage,
+  uploadDocument,
+} = require('../middlewares/upload.middleware');
 
 /* -------------------------------------------------- what seekers can read */
 
@@ -46,6 +50,10 @@ selfRouter.get('/me/documents', astrologerController.listDocuments);
 selfRouter.post('/me/documents', uploadDocument, astrologerController.addDocument);
 selfRouter.put('/me/documents/:documentId', uploadDocument, astrologerController.replaceDocument);
 selfRouter.delete('/me/documents/:documentId', astrologerController.deleteDocument);
+
+selfRouter.get('/me/gallery', astrologerController.listGallery);
+selfRouter.post('/me/gallery', uploadGalleryImage, astrologerController.addGalleryImage);
+selfRouter.delete('/me/gallery/:imageId', astrologerController.deleteGalleryImage);
 
 selfRouter.get('/me/bank-accounts', astrologerController.listBankAccounts);
 selfRouter.post('/me/bank-accounts', uploadDocument, astrologerController.addBankAccount);

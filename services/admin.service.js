@@ -21,6 +21,24 @@ const ApiError = require('../utils/ApiError');
 const walletService = require('./wallet.service');
 const notificationService = require('./notification.service');
 const settingsService = require('./settings.service');
+const refreshTokenService = require('./refreshToken.service');
+
+/**
+ * Every stage short of a decision. Reviewing an astrologer's documents or
+ * bank account never moves `applicationStatus` by itself — only
+ * `approveAstrologer`/`rejectAstrologer` do — so an application can sit in
+ * any of these while it's being worked through, and both the pending-count
+ * tile and the panel's "Pending" tab need to count/find all of them, not
+ * just the last one.
+ */
+const PENDING_APPLICATION_STATUSES = [
+  'registered',
+  'personal_submitted',
+  'professional_submitted',
+  'documents_submitted',
+  'bank_submitted',
+  'under_review',
+];
 
 /** Turns `page`/`limit` into what Mongo wants. */
 function paging({ page = 1, limit = 20 }) {
@@ -54,7 +72,7 @@ async function getDashboard() {
     User.countDocuments({ status: 'active' }),
     User.countDocuments({ status: 'active', createdAt: { $gte: startOfMonth } }),
     Astrologer.countDocuments({ applicationStatus: 'approved', status: 'active' }),
-    Astrologer.countDocuments({ applicationStatus: 'under_review' }),
+    Astrologer.countDocuments({ applicationStatus: { $in: PENDING_APPLICATION_STATUSES } }),
     ChatSession.countDocuments({ createdAt: { $gte: startOfToday } }),
     ChatSession.countDocuments({ status: 'active' }),
     /** Revenue is the platform's cut, not the whole charge. */
@@ -224,6 +242,11 @@ async function setUserStatus({ userId, status, reason, admin }) {
     : { reason: undefined, at: undefined, by: undefined };
   await user.save();
 
+  /** A blocked seeker's existing refresh token dies now, not at its next refresh. */
+  if (status === 'blocked') {
+    await refreshTokenService.revokeAll({ role: 'user', accountId: String(user._id) });
+  }
+
   return user;
 }
 
@@ -234,7 +257,9 @@ async function setUserStatus({ userId, status, reason, admin }) {
 async function listAstrologers({ search, applicationStatus, status, page, limit }) {
   const query = {};
   if (applicationStatus) {
-    query.applicationStatus = applicationStatus;
+    /** The panel's "Pending" tab asks for every pre-decision stage at once, comma-separated. */
+    const statuses = String(applicationStatus).split(',').map(value => value.trim()).filter(Boolean);
+    query.applicationStatus = statuses.length > 1 ? { $in: statuses } : statuses[0];
   }
   if (status) {
     query.status = status;
@@ -256,24 +281,36 @@ async function listAstrologers({ search, applicationStatus, status, page, limit 
   ]);
 
   return {
-    items: rows.map(astrologer => ({
-      id: String(astrologer._id),
-      astroCode: astrologer.astroCode,
-      name: astrologer.name,
-      email: astrologer.email,
-      phone: astrologer.phone?.number,
-      expertise: astrologer.expertise || [],
-      languages: astrologer.languages || [],
-      experienceYears: astrologer.experienceYears,
-      rating: astrologer.metrics?.rating || 0,
-      consultations: astrologer.metrics?.totalConsultations || 0,
-      earnings: astrologer.earnings?.lifetime || 0,
-      commissionPercent: astrologer.commissionPercent,
-      applicationStatus: astrologer.applicationStatus,
-      status: astrologer.status,
-      online: astrologer.presence?.isOnline,
-      joined: astrologer.createdAt,
-    })),
+    items: rows.map(astrologer => {
+      /** Same computation as astrologer.service.js's toDirectoryCard, for the same `rates` shape the panel's table already expects. */
+      const chat = astrologer.services?.find(service => service.type === 'chat' && service.isEnabled);
+      const call = astrologer.services?.find(service => service.type === 'call' && service.isEnabled);
+
+      return {
+        id: String(astrologer._id),
+        astroCode: astrologer.astroCode,
+        name: astrologer.name,
+        email: astrologer.email,
+        phone: astrologer.phone?.number,
+        photoUrl: astrologer.photoUrl,
+        expertise: astrologer.expertise || [],
+        languages: astrologer.languages || [],
+        experienceYears: astrologer.experienceYears,
+        rates: {
+          chat: chat ? { was: chat.ratePerMinute, now: chat.effectiveRate } : null,
+          call: call ? { was: call.ratePerMinute, now: call.effectiveRate } : null,
+        },
+        rating: astrologer.metrics?.rating || 0,
+        ratingCount: astrologer.metrics?.ratingCount || 0,
+        consultations: astrologer.metrics?.totalConsultations || 0,
+        earnings: astrologer.earnings?.lifetime || 0,
+        commissionPercent: astrologer.commissionPercent,
+        applicationStatus: astrologer.applicationStatus,
+        status: astrologer.status,
+        online: astrologer.presence?.isOnline,
+        joined: astrologer.createdAt,
+      };
+    }),
     total,
     page: current,
     limit: size,
@@ -481,6 +518,11 @@ async function setAstrologerStatus({ astrologerId, status, reason, admin }) {
     astrologer.presence.isOnline = false;
   }
   await astrologer.save();
+
+  /** A blocked astrologer's existing refresh token dies now, not at its next refresh. */
+  if (status === 'blocked') {
+    await refreshTokenService.revokeAll({ role: 'astrologer', accountId: String(astrologer._id) });
+  }
 
   return astrologer;
 }
@@ -991,6 +1033,29 @@ async function createAdmin({ name, email, role, admin }) {
   return { admin: created, temporaryPassword };
 }
 
+/**
+ * An admin updating their own name and/or photo — the "My Account" card in
+ * the panel. Unlike {@link updateAdmin}, this never touches role, status or
+ * permissions, so it needs no `admins.manage` gate: anyone signed in may
+ * change how their own name and avatar read, never what they may do.
+ */
+async function updateOwnProfile({ adminId, name, avatarUrl }) {
+  const admin = await Admin.findById(adminId);
+  if (!admin) {
+    throw ApiError.notFound('Admin not found.');
+  }
+
+  if (name) {
+    admin.name = String(name).trim();
+  }
+  if (avatarUrl) {
+    admin.avatarUrl = avatarUrl;
+  }
+  await admin.save();
+
+  return admin;
+}
+
 /** Changes a colleague's role, or suspends them. */
 async function updateAdmin({ adminId, changes, admin }) {
   if (String(adminId) === String(admin._id) && changes.status && changes.status !== 'active') {
@@ -1014,9 +1079,15 @@ async function updateAdmin({ adminId, changes, admin }) {
   if (changes.name) {
     target.name = String(changes.name).trim();
   }
-  /** Bumping this invalidates every token the account is currently holding. */
+  /**
+   * `tokenVersion` is bumped as a record of the event, but the actual
+   * invalidation is refreshTokenService.revokeAll — a JWT carries no
+   * tokenVersion claim to check it against, so bumping it alone would not
+   * stop a single already-issued token (see utils/token.js / refreshToken.service.js).
+   */
   if (changes.signOutEverywhere) {
     target.tokenVersion += 1;
+    await refreshTokenService.revokeAll({ role: 'admin', accountId: String(target._id) });
   }
 
   await target.save();
@@ -1042,6 +1113,9 @@ async function revokeAdmin({ adminId, admin }) {
   target.status = 'suspended';
   target.tokenVersion += 1;
   await target.save();
+
+  /** Kills any refresh token the account is already holding, not just future ones. */
+  await refreshTokenService.revokeAll({ role: 'admin', accountId: String(target._id) });
 
   return target;
 }
@@ -1254,6 +1328,7 @@ module.exports = {
   adjustWallet,
   listAdmins,
   createAdmin,
+  updateOwnProfile,
   updateAdmin,
   revokeAdmin,
   getReports,

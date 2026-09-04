@@ -16,6 +16,8 @@ const AstrologerProfile = require('../models/AstrologerProfile');
 const { ChatSession } = require('../models/Chat');
 const WalletTransaction = require('../models/WalletTransaction');
 const ApiError = require('../utils/ApiError');
+const chatService = require('./chat.service');
+const notificationService = require('./notification.service');
 
 /**
  * The only astrologers a seeker may see.
@@ -163,7 +165,7 @@ async function getAstrologerProfile(astrologerId) {
     tagline: profile?.tagline,
     specializations: profile?.specializations || [],
     topics: profile?.topics || [],
-    gallery: (profile?.gallery || []).map(file => file.url),
+    gallery: (profile?.gallery || []).map(item => item.file.url),
     ratingBreakdown: astrologer.metrics?.ratingBreakdown,
     chatMinutes: astrologer.metrics?.chatMinutes || 0,
     callMinutes: astrologer.metrics?.callMinutes || 0,
@@ -192,6 +194,8 @@ async function recentReviews(astrologerId, limit = 20, { page = 1 } = {}) {
     rating: session.review.rating,
     comment: session.review.comment,
     reply: session.review.reply,
+    flagged: session.review.flagged,
+    pinned: session.review.pinned,
     channel: session.channel,
     durationSeconds: session.durationSeconds,
     at: session.review.ratedAt,
@@ -300,7 +304,7 @@ async function getOwnProfile(astrologerId) {
     secondaryPhone: astrologer.secondaryPhone?.number,
     gender: astrologer.gender,
     dateOfBirth: astrologer.dateOfBirth,
-    photo: astrologer.photoUrl,
+    photoUrl: astrologer.photoUrl,
     applicationStatus: astrologer.applicationStatus,
     onboardingStep: astrologer.onboardingStep,
     rejectionReason: astrologer.approval?.rejectionReason,
@@ -476,6 +480,13 @@ async function requestPriceChange(astrologerId, { service, requestedRate, offerP
   });
   await profile.save();
 
+  await notificationService.notifyAdmins({
+    type: 'system',
+    title: 'Price change requested',
+    body: `${astrologer.name} wants their ${service} rate changed to ₹${requestedRate}/min.`,
+    action: { screen: 'astrologer', id: String(astrologerId) },
+  });
+
   return profile.priceChangeRequests[profile.priceChangeRequests.length - 1];
 }
 
@@ -548,6 +559,35 @@ async function deleteDocument(astrologerId, documentId) {
   return profile.documents;
 }
 
+/**
+ * The portfolio gallery (astro_app Edit Profile) — separate from the single
+ * `photoUrl` on the account itself; an astrologer can file several of these.
+ */
+async function listGalleryImages(astrologerId) {
+  const { profile } = await ownProfile(astrologerId);
+  return profile.gallery;
+}
+
+async function addGalleryImage(astrologerId, file) {
+  const { profile } = await ownProfile(astrologerId);
+  profile.gallery.push({ file });
+  await profile.save();
+  return profile.gallery;
+}
+
+async function deleteGalleryImage(astrologerId, imageId) {
+  const { profile } = await ownProfile(astrologerId);
+
+  const image = profile.gallery.id(imageId);
+  if (!image) {
+    throw ApiError.notFound('That photo is no longer on file.');
+  }
+
+  image.deleteOne();
+  await profile.save();
+  return profile.gallery;
+}
+
 /** Adds a payout account (astro_app Bank Details). */
 async function addBankAccount(astrologerId, account) {
   const { astrologer, profile } = await ownProfile(astrologerId);
@@ -595,6 +635,13 @@ async function submitApplication(astrologerId) {
   astrologer.onboardingStep = 5;
   await astrologer.save();
 
+  await notificationService.notifyAdmins({
+    type: 'application',
+    title: 'New astrologer application',
+    body: `${astrologer.name} has submitted their application for review.`,
+    action: { screen: 'astrologer', id: String(astrologer._id) },
+  });
+
   return { applicationStatus: astrologer.applicationStatus };
 }
 
@@ -607,6 +654,9 @@ async function submitApplication(astrologerId) {
  */
 async function getDashboard(astrologerId) {
   const { astrologer } = await ownProfile(astrologerId);
+
+  /** So a request nobody answered in time stops counting as pending here too. */
+  await chatService.expireStaleRequests(astrologerId);
 
   const startOfToday = new Date();
   startOfToday.setHours(0, 0, 0, 0);
@@ -778,6 +828,9 @@ module.exports = {
   addDocument,
   listDocuments,
   deleteDocument,
+  listGalleryImages,
+  addGalleryImage,
+  deleteGalleryImage,
   addBankAccount,
   listBankAccounts,
   submitApplication,

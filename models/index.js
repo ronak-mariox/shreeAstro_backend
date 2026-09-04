@@ -21,6 +21,7 @@ const Article = require('./Article');
 const AuditLog = require('./AuditLog');
 const Settings = require('./Settings');
 const SupportTicket = require('./SupportTicket');
+const Integration = require('./Integration');
 
 module.exports = {
   User,
@@ -36,6 +37,7 @@ module.exports = {
   AuditLog,
   Settings,
   SupportTicket,
+  Integration,
   constants,
   common,
 };

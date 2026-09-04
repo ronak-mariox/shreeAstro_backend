@@ -91,6 +91,21 @@ const priceChangeRequestSchema = new Schema(
   { timestamps: true },
 );
 
+/**
+ * One photo in the portfolio gallery (astro_app Edit Profile).
+ *
+ * Wrapped rather than a bare `[fileSchema]`, because `fileSchema` itself opts
+ * out of its own `_id` (it is normally embedded inside another subdocument,
+ * such as a document's `file`) — the gallery needs one to address a photo for
+ * deletion, the same way `documentSchema`/`bankAccountSchema` do.
+ */
+const galleryImageSchema = new Schema(
+  {
+    file: { type: fileSchema, required: true },
+  },
+  { timestamps: true },
+);
+
 /** One day's working window; the directory uses it to predict availability. */
 const availabilitySlotSchema = new Schema(
   {
@@ -139,7 +154,7 @@ const astrologerProfileSchema = new Schema(
     ],
 
     /** Portfolio images shown in the profile gallery. */
-    gallery: { type: [fileSchema], default: [] },
+    gallery: { type: [galleryImageSchema], default: [] },
     /** Promotional / media clips the astrologer has uploaded. */
     media: { type: [fileSchema], default: [] },
 

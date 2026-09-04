@@ -10,7 +10,7 @@
 const mongoose = require('mongoose');
 const { Schema } = mongoose;
 
-const OWNER_ROLES = ['user', 'astrologer'];
+const OWNER_ROLES = ['user', 'astrologer', 'admin'];
 
 /** What the alert is about — the app picks its icon and colour from this. */
 const NOTIFICATION_TYPES = [

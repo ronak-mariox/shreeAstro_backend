@@ -28,7 +28,7 @@ async function create({ ownerRole, ownerId, issueType, description, chatSession 
 
   const owner = await OWNER_MODELS[ownerRole].findById(ownerId).select('name');
 
-  return SupportTicket.create({
+  const ticket = await SupportTicket.create({
     ownerRole,
     owner: ownerId,
     ownerName: owner?.name,
@@ -36,6 +36,15 @@ async function create({ ownerRole, ownerId, issueType, description, chatSession 
     description: String(description).trim(),
     chatSession,
   });
+
+  await notificationService.notifyAdmins({
+    type: 'system',
+    title: 'New support ticket',
+    body: `${owner?.name || 'Someone'} filed a ${issueType} ticket: ${ticket.reference}.`,
+    action: { screen: 'support', id: String(ticket._id) },
+  });
+
+  return ticket;
 }
 
 /** The tickets one account has raised. */

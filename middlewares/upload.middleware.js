@@ -10,6 +10,7 @@
  */
 
 const crypto = require('crypto');
+const fs = require('fs');
 const path = require('path');
 
 const multer = require('multer');
@@ -17,6 +18,7 @@ const multer = require('multer');
 const { MAX_UPLOAD_MB } = require('../config/constants');
 const ApiError = require('../utils/ApiError');
 const { ensureUploadDir, publicUrlFor } = require('../services/storage.service');
+const s3Service = require('../services/s3.service');
 
 /** What an image upload may be. HEIC is what an iPhone hands over by default. */
 const IMAGE_TYPES = [
@@ -27,24 +29,88 @@ const IMAGE_TYPES = [
   'image/heif',
 ];
 
+/** An uploaded filename is user input, and must never be trusted to build a path. */
+function generatedFilename(originalname) {
+  const extension = path.extname(originalname).toLowerCase().slice(0, 10);
+  return `${Date.now()}-${crypto.randomBytes(8).toString('hex')}${extension}`;
+}
+
 /**
- * A file is stored under a name of our own making — an uploaded filename is
- * user input, and must never be trusted to build a path.
+ * A multer storage engine that writes to AWS S3 when it is configured on the
+ * Third Parties tab, and to local disk — exactly as this always has — when it
+ * is not. The choice is made per file, at the moment it is actually received,
+ * so turning S3 on or off in the panel takes effect on the very next upload
+ * with no restart.
  */
-const storageFor = subdirectory =>
-  multer.diskStorage({
-    destination(req, file, done) {
-      try {
-        done(null, ensureUploadDir(subdirectory));
-      } catch (error) {
-        done(error);
-      }
-    },
-    filename(req, file, done) {
-      const extension = path.extname(file.originalname).toLowerCase().slice(0, 10);
-      done(null, `${Date.now()}-${crypto.randomBytes(8).toString('hex')}${extension}`);
-    },
-  });
+class HybridStorage {
+  constructor(subdirectory) {
+    this.subdirectory = subdirectory;
+  }
+
+  async _handleFile(req, file, done) {
+    const filename = generatedFilename(file.originalname);
+
+    /**
+     * Falls back to local disk on any failure to check — including a slow or
+     * unreachable database — rather than failing the upload outright. This is
+     * what keeps an upload working exactly as it always has when S3 was never
+     * configured in the first place.
+     */
+    const useS3 = await s3Service.isConfigured().catch(error => {
+      console.error('[upload] could not check S3 configuration, using local disk:', error.message);
+      return false;
+    });
+
+    if (useS3) {
+      const chunks = [];
+      file.stream.on('data', chunk => chunks.push(chunk));
+      file.stream.on('error', done);
+      file.stream.on('end', async () => {
+        try {
+          const buffer = Buffer.concat(chunks);
+          const key = `${this.subdirectory}/${filename}`;
+          const url = await s3Service.upload({ buffer, key, contentType: file.mimetype });
+          done(null, { filename, path: url, key, size: buffer.length, storage: 's3' });
+        } catch (error) {
+          done(error);
+        }
+      });
+      return;
+    }
+
+    /** Local disk — today's behavior, unchanged. */
+    let destination;
+    try {
+      destination = ensureUploadDir(this.subdirectory);
+    } catch (error) {
+      done(error);
+      return;
+    }
+
+    const target = path.join(destination, filename);
+    const outStream = fs.createWriteStream(target);
+    file.stream.on('error', done);
+    outStream.on('error', done);
+    file.stream.pipe(outStream);
+    outStream.on('finish', () => {
+      done(null, { filename, path: target, size: outStream.bytesWritten, storage: 'local' });
+    });
+  }
+
+  _removeFile(req, file, done) {
+    if (file.storage === 's3' && file.key) {
+      s3Service.remove(file.key).then(() => done(null)).catch(done);
+      return;
+    }
+    if (file.path) {
+      fs.unlink(file.path, () => done(null));
+      return;
+    }
+    done(null);
+  }
+}
+
+const storageFor = subdirectory => new HybridStorage(subdirectory);
 
 const imageFilter = (req, file, done) => {
   if (!IMAGE_TYPES.includes(file.mimetype)) {
@@ -77,6 +143,13 @@ function attachUploadedUrl(req, res, next) {
 const uploadProfilePhoto = [singleImage('photo', 'profiles'), attachUploadedUrl];
 
 /**
+ * One portfolio photo for the Edit Profile gallery — separate from the single
+ * profile photo above. Recorded as a whole file (not just a URL), the same as
+ * a document, so it can be listed with its own metadata.
+ */
+const uploadGalleryImage = [singleImage('image', 'gallery'), attachUploadedFile];
+
+/**
  * Documents and bank proofs — a scan of an Aadhaar card or a cancelled cheque.
  * A PDF is allowed here as well as an image, because that is what a bank hands
  * people.
@@ -100,7 +173,8 @@ function attachUploadedFile(req, res, next) {
   if (req.file) {
     req.uploadedFile = {
       url: publicUrlFor(req.file, req),
-      key: req.file.filename,
+      /** The S3 object key when stored there; otherwise the local filename. */
+      key: req.file.key || req.file.filename,
       fileName: req.file.originalname,
       mimeType: req.file.mimetype,
       sizeBytes: req.file.size,
@@ -121,6 +195,7 @@ const uploadDocument = [
 
 module.exports = {
   uploadProfilePhoto,
+  uploadGalleryImage,
   uploadDocument,
   singleImage,
   attachUploadedUrl,

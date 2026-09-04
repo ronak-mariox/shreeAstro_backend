@@ -17,6 +17,7 @@ const WalletTransaction = require('../models/WalletTransaction');
 const Withdrawal = require('../models/Withdrawal');
 const ApiError = require('../utils/ApiError');
 const settingsService = require('./settings.service');
+const notificationService = require('./notification.service');
 
 /**
  * Fallbacks only.
@@ -204,7 +205,7 @@ async function startTopUp({ userId, amount }) {
  *
  * When a real gateway is added, verify its signature before calling this.
  */
-async function confirmTopUp({ userId, transactionId, paymentId }) {
+async function confirmTopUp({ userId, transactionId, paymentId, method }) {
   const transaction = await WalletTransaction.findOne({
     _id: transactionId,
     owner: userId,
@@ -236,7 +237,13 @@ async function confirmTopUp({ userId, transactionId, paymentId }) {
 
   transaction.status = 'success';
   transaction.balanceAfter = user.wallet.balance;
-  transaction.payment.paymentId = paymentId;
+  if (paymentId) {
+    transaction.payment.paymentId = paymentId;
+  }
+  /** Cosmetic today (no gateway to report a method back), but the app already asks. */
+  if (method) {
+    transaction.payment.method = method;
+  }
   await transaction.save();
 
   return transaction;
@@ -292,7 +299,7 @@ async function requestWithdrawal({ astrologerId, amount, bankAccountId }) {
     throw ApiError.badRequest('Not enough balance to withdraw that much.');
   }
 
-  return Withdrawal.create({
+  const withdrawal = await Withdrawal.create({
     astrologer: astrologerId,
     amount: rupees,
     bankAccount: {
@@ -303,6 +310,15 @@ async function requestWithdrawal({ astrologerId, amount, bankAccountId }) {
       upiId: account.upiId,
     },
   });
+
+  await notificationService.notifyAdmins({
+    type: 'withdrawal',
+    title: 'Withdrawal requested',
+    body: `${astrologer.name} requested a withdrawal of ₹${rupees}.`,
+    action: { screen: 'astrologer', id: String(astrologerId) },
+  });
+
+  return withdrawal;
 }
 
 /** The astrologer's own payout history. */

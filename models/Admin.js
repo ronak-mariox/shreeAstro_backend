@@ -141,6 +141,9 @@ const adminSchema = new Schema(
     avatarUrl: { type: String, trim: true },
     createdBy: { type: Schema.Types.ObjectId, ref: 'Admin' },
     deletedAt: { type: Date },
+
+    /** Mirrors the unread count on this admin's own Notification rows. */
+    unreadNotifications: { type: Number, default: 0, min: 0 },
   },
   {
     timestamps: true,

@@ -32,6 +32,21 @@ function errorHandler(error, req, res, next) {
     return;
   }
 
+  /**
+   * A Mongoose schema failed to validate — bad input the caller sent, not a
+   * bug, even though it wasn't raised as an `ApiError` by hand. Without this,
+   * the real reason (e.g. "Enter a valid IFSC code.") never left the server
+   * log; the caller only ever saw a generic 500.
+   */
+  if (error.name === 'ValidationError' && error.errors) {
+    const fields = {};
+    for (const [path, validatorError] of Object.entries(error.errors)) {
+      fields[path.split('.').pop()] = validatorError.message;
+    }
+    const [firstMessage] = Object.values(fields);
+    error = ApiError.unprocessable(firstMessage ?? 'Please check the form.', fields);
+  }
+
   const isOperational = error instanceof ApiError;
 
   if (!isOperational) {

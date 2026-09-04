@@ -52,6 +52,7 @@ async function getProfile(userId) {
     isEmailVerified: user.isEmailVerified,
     notificationPrefs: user.notificationPrefs,
     completion: profile.completion,
+    profileComplete: profile.completion?.percent === 100,
   };
 }
 
