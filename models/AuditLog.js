@@ -19,6 +19,7 @@ const AREAS = [
   'Wallets',
   'Content',
   'Settings',
+  'Third parties',
 ];
 
 const auditLogSchema = new Schema(

@@ -152,7 +152,7 @@ Only approved, active astrologers ever appear here.
 |---|---|---|
 | GET / PATCH | `/astrologer/me` | Profile. |
 | PATCH | `/astrologer/me/presence` | `{ isOnline }` — the dashboard toggle. |
-| PATCH | `/astrologer/me/services` | `{ type, isEnabled, freeMinutes }`. |
+| PATCH | `/astrologer/me/services` | `{ type, isEnabled }`. |
 | GET | `/astrologer/me/service-rates` | Rates, and any pending change. |
 | POST | `/astrologer/me/price-changes` | Ask to change a rate. |
 | GET / POST | `/astrologer/me/documents` | Filed scans. POST is multipart, field `file`. |
@@ -230,7 +230,7 @@ POST /chats
   "intake": { "topic": "career-job", "question": "When will I change jobs?", "minutes": 10 } }
 
 -> { "chatId": "...", "status": "requested", "ratePerMinute": 20,
-     "freeMinutes": 3, "expiresInSeconds": 120 }
+     "expiresInSeconds": 120 }
 ```
 
 ### Billing
@@ -395,7 +395,7 @@ rates, so it needs the services:
 ```jsonc
 POST /admin/astrologers/:id/approve
 { "commissionPercent": 25,
-  "services": [ { "type": "chat", "ratePerMinute": 20, "freeMinutes": 3, "isEnabled": true },
+  "services": [ { "type": "chat", "ratePerMinute": 20, "isEnabled": true },
                 { "type": "call", "ratePerMinute": 30, "isEnabled": true } ] }
 ```
 
@@ -409,11 +409,12 @@ a log you can change is not a log.
 | Method | Path | Who | What |
 |---|---|---|---|
 | GET | `/settings` | anyone | Recharge limits, feature switches, app versions. |
-| GET | `/horoscope` | anyone | `?sign=Leo` for one, none for all twelve. |
+| GET | `/horoscope` | anyone | `?sign=Leo` for one, none for all twelve — placeholder readings, see "Still to plug in" below. |
+| GET | `/horoscope/daily` | anyone | `?sign=leo&day=next\|previous` — real AstrologyAPI reading (`services/horoscopeCache.service.js`), cached at most 12x/day for the whole app. |
 | POST | `/support/tickets` | both apps | Raise a support request or dispute. |
 | GET | `/support/tickets` | both apps | The ones this account raised. |
 
-`/settings` and `/horoscope` are open because the apps read them on first
+`/settings` and `/horoscope*` are open because the apps read them on first
 launch, before anyone has signed in. `/settings` deliberately excludes the
 commission and anything else about the business.
 
@@ -427,7 +428,6 @@ governs the very next top-up and the very next consultation:
 | `commissionPercent` | the default cut for a newly created astrologer |
 | `minRecharge` / `maxRecharge` | `POST /wallet/topup` |
 | `minPayout` | `POST /wallet/withdrawals` |
-| `freeTrialMinutes` | free minutes on a seeker's first consultation |
 | `features.*` | registrations, Apple/Google sign-in, the AI assistant, voice, auto-approve, maintenance mode |
 | `appVersions.*` | what the apps check themselves against on launch |
 
@@ -456,4 +456,4 @@ HTTP. That is why the socket layer and the REST layer can share one rulebook.
 | Google / Apple sign-in credentials | code is complete (`loginWithGoogle`/`loginWithApple` in `services/auth.service.js`); an admin still has to enter each provider's credentials under Settings → Third Parties, or the endpoint answers 400 `google_not_configured` / `apple_not_configured` |
 | Image and audio messages | `ENABLED_TYPES` in `models/Chat.js` |
 | The AI assistant's answers | `generateAiReply` in `services/chat.service.js` |
-| Real horoscope readings | `services/horoscope.service.js` |
+| Real horoscope readings on the OLD `/horoscope` route | `services/horoscope.service.js` — `GET /horoscope/daily` is the real one now; this placeholder still backs the older route and `/users/me/home`'s horoscope card |

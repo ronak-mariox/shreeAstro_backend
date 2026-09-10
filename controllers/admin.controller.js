@@ -382,6 +382,44 @@ const deleteArticle = asyncHandler(async (req, res) => {
   return res.json(result);
 });
 
+/* ---------------------------------------------------------- third parties */
+
+/** GET /api/v1/admin/third-parties */
+const listThirdParties = asyncHandler(async (req, res) => {
+  return res.json(await adminService.listThirdParties());
+});
+
+/** POST /api/v1/admin/third-parties and PUT /api/v1/admin/third-parties/:thirdPartyId */
+const saveThirdParty = asyncHandler(async (req, res) => {
+  const thirdParty = await adminService.saveThirdParty({
+    thirdPartyId: req.params.thirdPartyId,
+    changes: req.body,
+    admin: req.admin,
+  });
+
+  await logChange(req, {
+    action: req.params.thirdPartyId ? 'Updated third party' : 'Added third party',
+    area: 'Third parties',
+    target: thirdParty.name,
+    targetId: thirdParty._id,
+  });
+
+  return res.status(req.params.thirdPartyId ? 200 : 201).json({ thirdParty });
+});
+
+/** DELETE /api/v1/admin/third-parties/:thirdPartyId */
+const deleteThirdParty = asyncHandler(async (req, res) => {
+  const result = await adminService.deleteThirdParty(req.params.thirdPartyId);
+
+  await logChange(req, {
+    action: 'Removed third party',
+    area: 'Third parties',
+    target: req.params.thirdPartyId,
+  });
+
+  return res.json(result);
+});
+
 /* ------------------------------------------------------------- wallets */
 
 /** GET /api/v1/admin/wallets */
@@ -644,5 +682,8 @@ module.exports = {
   listArticles,
   saveArticle,
   deleteArticle,
+  listThirdParties,
+  saveThirdParty,
+  deleteThirdParty,
   listAuditLogs,
 };

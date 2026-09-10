@@ -83,6 +83,15 @@ const register = asyncHandler(async (req, res) => {
       photoUrl: req.uploadedPhotoUrl,
     });
 
+    /**
+     * Fire-and-forget: resolves the real Vedic Moon sign in the background so
+     * it's ready by the time the app reaches Home, without making
+     * registration itself wait on a geocode + provider round trip. See
+     * userService.enrichZodiacFromBirthDetails's own doc comment for why
+     * every failure there is swallowed rather than surfaced here.
+     */
+    userService.enrichZodiacFromBirthDetails(user._id).catch(() => {});
+
     const tokens = await authService.issueTokens(user._id, 'user');
     return respondWithTokens(res, tokens, { user: toAuthUser(user, profile) }, 201);
   } catch (error) {
@@ -236,6 +245,37 @@ const resendAdminOtp = asyncHandler(async (req, res) => {
   return res.json({ message: 'Code sent.', ...sent });
 });
 
+/**
+ * POST /api/v1/auth/admin/forgot-password — step one: where to send the code.
+ *
+ * Always answers the same shape, whether or not the address belongs to an
+ * admin — see authService.requestAdminPasswordReset for why.
+ */
+const forgotAdminPassword = asyncHandler(async (req, res) => {
+  const result = await authService.requestAdminPasswordReset({ email: req.body.email });
+  return res.json(result);
+});
+
+/** POST /api/v1/auth/admin/forgot-password/resend — send the reset code again. */
+const resendAdminPasswordReset = asyncHandler(async (req, res) => {
+  const result = await authService.resendAdminPasswordReset({ email: req.body.email });
+  return res.json(result);
+});
+
+/**
+ * POST /api/v1/auth/admin/reset-password — step two: the emailed code and a
+ * new password. Does not sign the admin in — they return to the login form
+ * and prove the new password there, same as any other first sign-in.
+ */
+const resetAdminPassword = asyncHandler(async (req, res) => {
+  await authService.resetAdminPassword({
+    email: req.body.email,
+    code: req.body.code,
+    password: req.body.password,
+  });
+  return res.json({ reset: true });
+});
+
 /* ----------------------------------------------------------- token upkeep */
 
 /**
@@ -319,6 +359,9 @@ module.exports = {
   loginAdmin,
   verifyAdminOtp,
   resendAdminOtp,
+  forgotAdminPassword,
+  resendAdminPasswordReset,
+  resetAdminPassword,
   refresh,
   logout,
   me,

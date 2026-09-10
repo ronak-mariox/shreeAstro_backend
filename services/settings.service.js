@@ -2,10 +2,10 @@
  * Platform settings, and a small cache in front of them.
  *
  * These are read on almost every money path — the recharge limits, the
- * commission, the free trial minutes — so reading the document from Mongo every
- * time would be wasteful. It is cached for a few seconds instead, which is
- * short enough that a change made in the panel takes effect while you are still
- * looking at the screen.
+ * commission — so reading the document from Mongo every time would be
+ * wasteful. It is cached for a few seconds instead, which is short enough
+ * that a change made in the panel takes effect while you are still looking
+ * at the screen.
  *
  * `update()` clears the cache itself, so a change is visible immediately on the
  * server that made it.
@@ -41,7 +41,7 @@ async function update(changes, admin) {
   const settings = await Settings.load();
 
   const numbers = [
-    'commissionPercent', 'minRecharge', 'maxRecharge', 'minPayout', 'freeTrialMinutes',
+    'commissionPercent', 'minRecharge', 'maxRecharge', 'minPayout',
   ];
   for (const field of numbers) {
     if (changes[field] !== undefined) {
@@ -84,7 +84,6 @@ async function publicSettings() {
     minRecharge: settings.minRecharge,
     maxRecharge: settings.maxRecharge,
     minPayout: settings.minPayout,
-    freeTrialMinutes: settings.freeTrialMinutes,
     features: {
       registrationsOpen: settings.features.registrationsOpen,
       appleSignIn: settings.features.appleSignIn,

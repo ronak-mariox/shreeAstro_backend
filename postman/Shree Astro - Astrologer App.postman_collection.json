@@ -871,7 +871,7 @@
             "description": "**Works once.** While the profile is still being set up there is no agreed price to change, so the astrologer sets their own opening rates here.\n\nThe moment the profile is complete \u2014 nothing left in `missing` \u2014 this is refused with 400, and every change after that goes through *Request a price change* for an admin to approve.\n\n`GET /astrologer/me` tells you which state you are in via `canSetOwnRates`.",
             "body": {
               "mode": "raw",
-              "raw": "{\n  \"services\": [\n    {\n      \"type\": \"chat\",\n      \"ratePerMinute\": 20,\n      \"offerPercent\": 0,\n      \"freeMinutes\": 3,\n      \"isEnabled\": true\n    },\n    {\n      \"type\": \"call\",\n      \"ratePerMinute\": 30,\n      \"isEnabled\": true\n    }\n  ]\n}",
+              "raw": "{\n  \"services\": [\n    {\n      \"type\": \"chat\",\n      \"ratePerMinute\": 20,\n      \"offerPercent\": 0,\n      \"isEnabled\": true\n    },\n    {\n      \"type\": \"call\",\n      \"ratePerMinute\": 30,\n      \"isEnabled\": true\n    }\n  ]\n}",
               "options": {
                 "raw": {
                   "language": "json"
@@ -957,7 +957,7 @@
             "description": "Turns a service on or off, or changes the free minutes granted to a first-time seeker.\n\n**The rate cannot be set here** \u2014 that is what the price-change request is for. `type` is `chat`, `call`, `live_chat`, `live_call` or `emergency_chat`.",
             "body": {
               "mode": "raw",
-              "raw": "{\n  \"type\": \"chat\",\n  \"isEnabled\": true,\n  \"freeMinutes\": 3\n}",
+              "raw": "{\n  \"type\": \"chat\",\n  \"isEnabled\": true\n}",
               "options": {
                 "raw": {
                   "language": "json"

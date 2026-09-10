@@ -72,17 +72,6 @@ const userSchema = new Schema(
     wallet: { type: walletSchema, default: () => ({}) },
     stats: { type: statsSchema, default: () => ({}) },
 
-    /**
-     * The first-consultation offer the directory prints as "Free". Held here so
-     * a seeker cannot claim it twice by switching astrologers.
-     */
-    freeConsultation: {
-      isUsed: { type: Boolean, default: false },
-      minutes: { type: Number, default: 3, min: 0 },
-      usedAt: { type: Date },
-      usedInSession: { type: Schema.Types.ObjectId, ref: 'ChatSession' },
-    },
-
     /** Which astrologers the seeker follows / has favourited. */
     favouriteAstrologers: [{ type: Schema.Types.ObjectId, ref: 'Astrologer' }],
 

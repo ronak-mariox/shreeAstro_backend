@@ -41,7 +41,7 @@ const emit = (socket, event, payload) =>
   const authService = require('../services/auth.service');
   const chatService = require('../services/chat.service');
 
-  const user = await User.create({ name: 'Arjun', phone: { number: '9876543210' }, email: 'a@x.com' });
+  const user = await User.create({ name: 'Arjun', phone: { number: '9876543210' }, email: 'a@x.com', wallet: { balance: 1000 } });
   const astrologer = await Astrologer.create({
     name: 'Pt. Rajesh', phone: { number: '9811111111' },
     applicationStatus: 'approved', status: 'active',

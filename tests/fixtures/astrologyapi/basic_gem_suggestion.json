@@ -1,0 +1,32 @@
+{
+  "LIFE": {
+    "name": "Pearl",
+    "gem_key": "pearl",
+    "semi_gem": "Moon Stone",
+    "wear_finger": "Ring or Little",
+    "weight_caret": " 5 - 7.25",
+    "wear_metal": "Silver",
+    "wear_day": "Monday",
+    "gem_deity": "Moon"
+  },
+  "BENEFIC": {
+    "name": "Red Coral",
+    "gem_key": "red_coral",
+    "semi_gem": "Red Agate",
+    "wear_finger": "Ring",
+    "weight_caret": "6 - 10.25",
+    "wear_metal": "Gold",
+    "wear_day": "Tuesday",
+    "gem_deity": "Mars"
+  },
+  "LUCKY": {
+    "name": "Yellow Sapphire",
+    "gem_key": "yellow_sapphire",
+    "semi_gem": "Topaz",
+    "wear_finger": "Index",
+    "weight_caret": "4 - 5.25",
+    "wear_metal": "Gold",
+    "wear_day": "Thursday",
+    "gem_deity": "Jupiter"
+  }
+}

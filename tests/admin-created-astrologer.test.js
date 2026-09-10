@@ -14,6 +14,7 @@ const mongoose = require('mongoose');
 const { connectRedis, redis } = require('../config/redis');
 const { createApp } = require('../app');
 const { hashPassword } = require('../utils/password');
+const astrologyApiClient = require('../services/astrologyApi.client');
 
 const PORT = 5095;
 const BASE = `http://127.0.0.1:${PORT}/api/v1`;
@@ -23,6 +24,16 @@ const check = (l, ok, extra) => {
   else { fail += 1; console.log(`  FAIL ${l}${extra !== undefined ? ` -> ${JSON.stringify(extra)}` : ''}`); }
 };
 const section = t => console.log(`\n=== ${t} ===`);
+
+/**
+ * Registering a user now fires services/user.service.js's
+ * enrichZodiacFromBirthDetails in the background (see
+ * controllers/auth.controller.js), which would otherwise hit the real
+ * AstrologyAPI transport. This file doesn't assert on Moon sign / horoscope
+ * content, so an empty geo_details response is enough to make it a silent,
+ * free no-op (no place found -> nothing further is ever fetched).
+ */
+const originalAstrologyRequest = astrologyApiClient.request;
 
 async function call(method, p, { token, body } = {}) {
   const headers = {};
@@ -42,6 +53,8 @@ const PUT = (p, o) => call('PUT', p, o);
   await connectRedis();
   const stale = await redis.keys('*');
   if (stale.length) await redis.del(...stale.map(k => k.replace('shreeastro-test:', '')));
+
+  astrologyApiClient.request = async () => ({ geonames: [] });
 
   const server = createApp().listen(PORT);
   const Admin = require('../models/Admin');
@@ -148,7 +161,7 @@ const PUT = (p, o) => call('PUT', p, o);
   const rates = await PUT('/astrologer/me/rates', {
     token: astroToken,
     body: { services: [
-      { type: 'chat', ratePerMinute: 20, freeMinutes: 3, isEnabled: true },
+      { type: 'chat', ratePerMinute: 20, isEnabled: true },
       { type: 'call', ratePerMinute: 30, isEnabled: true },
     ] },
   });
@@ -183,9 +196,15 @@ const PUT = (p, o) => call('PUT', p, o);
   const detail = await GET(`/astrologers/${astrologerId}`, { token: userToken });
   check('the profile they wrote is shown', detail.body.astrologer?.about?.includes('18 years'), detail.body.astrologer?.about);
 
+  astrologyApiClient.request = originalAstrologyRequest;
+
   console.log(`\n${pass} passed, ${fail} failed`);
   server.close();
   await mongoose.disconnect();
   await redis.quit();
   process.exit(fail ? 1 : 0);
-})().catch(e => { console.error('CRASHED:', e); process.exit(1); });
+})().catch(e => {
+  astrologyApiClient.request = originalAstrologyRequest;
+  console.error('CRASHED:', e);
+  process.exit(1);
+});

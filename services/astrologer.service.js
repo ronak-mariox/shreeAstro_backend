@@ -14,10 +14,11 @@
 const Astrologer = require('../models/Astrologer');
 const AstrologerProfile = require('../models/AstrologerProfile');
 const { ChatSession } = require('../models/Chat');
-const WalletTransaction = require('../models/WalletTransaction');
 const ApiError = require('../utils/ApiError');
+const { istDateString, startOfIstDay } = require('../utils/istDate');
 const chatService = require('./chat.service');
 const notificationService = require('./notification.service');
+const walletService = require('./wallet.service');
 
 /**
  * The only astrologers a seeker may see.
@@ -63,7 +64,6 @@ function toDirectoryCard(astrologer) {
       chat: chat ? { was: chat.ratePerMinute, now: chat.effectiveRate } : null,
       call: call ? { was: call.ratePerMinute, now: call.effectiveRate } : null,
     },
-    freeMinutes: chat?.freeMinutes || 0,
   };
 }
 
@@ -284,7 +284,6 @@ async function setOwnRates(astrologerId, services = []) {
     isEnabled: service.isEnabled !== false,
     ratePerMinute: Number(service.ratePerMinute),
     offerPercent: Number(service.offerPercent) || 0,
-    freeMinutes: Number(service.freeMinutes) || 0,
   }));
   await astrologer.save();
 
@@ -409,12 +408,12 @@ async function updateOwnProfile(astrologerId, changes) {
 }
 
 /**
- * Switches a service on or off, or changes its free minutes.
+ * Switches a service on or off.
  *
  * The *rate* is deliberately not settable here — a price change has to be
  * approved, which is what requestPriceChange below is for.
  */
-async function setService(astrologerId, { type, isEnabled, freeMinutes }) {
+async function setService(astrologerId, { type, isEnabled }) {
   const astrologer = await Astrologer.findById(astrologerId);
   if (!astrologer) {
     throw ApiError.notFound('Account not found.');
@@ -427,9 +426,6 @@ async function setService(astrologerId, { type, isEnabled, freeMinutes }) {
 
   if (isEnabled !== undefined) {
     service.isEnabled = Boolean(isEnabled);
-  }
-  if (freeMinutes !== undefined) {
-    service.freeMinutes = Math.max(Number(freeMinutes) || 0, 0);
   }
 
   await astrologer.save();
@@ -504,7 +500,6 @@ async function listServiceRates(astrologerId) {
       ratePerMinute: service.ratePerMinute,
       effectiveRate: service.effectiveRate,
       offerPercent: service.offerPercent,
-      freeMinutes: service.freeMinutes,
       isEnabled: service.isEnabled,
       request: request
         ? {
@@ -658,22 +653,10 @@ async function getDashboard(astrologerId) {
   /** So a request nobody answered in time stops counting as pending here too. */
   await chatService.expireStaleRequests(astrologerId);
 
-  const startOfToday = new Date();
-  startOfToday.setHours(0, 0, 0, 0);
+  const startOfToday = startOfIstDay(istDateString());
 
-  const [todayEarnings, todayConsultations, pendingRequests] = await Promise.all([
-    WalletTransaction.aggregate([
-      {
-        $match: {
-          owner: astrologer._id,
-          ownerRole: 'astrologer',
-          direction: 'credit',
-          status: 'success',
-          createdAt: { $gte: startOfToday },
-        },
-      },
-      { $group: { _id: null, total: { $sum: '$amount' } } },
-    ]),
+  const [earnings, todayConsultations, pendingRequests] = await Promise.all([
+    walletService.getAstrologerEarnings(astrologerId),
     ChatSession.countDocuments({
       astrologer: astrologerId,
       status: 'ended',
@@ -687,10 +670,10 @@ async function getDashboard(astrologerId) {
     photo: astrologer.photoUrl,
     isOnline: astrologer.presence?.isOnline || false,
     earnings: {
-      today: todayEarnings[0]?.total || 0,
-      balance: astrologer.earnings?.balance || 0,
-      thisMonth: astrologer.earnings?.thisMonth || 0,
-      lifetime: astrologer.earnings?.lifetime || 0,
+      today: earnings.today,
+      balance: earnings.balance || 0,
+      thisMonth: earnings.thisMonth,
+      lifetime: earnings.lifetime || 0,
     },
     performance: {
       consultationsToday: todayConsultations,
@@ -708,7 +691,6 @@ async function getDashboard(astrologerId) {
       isEnabled: service.isEnabled,
       ratePerMinute: service.ratePerMinute,
       effectiveRate: service.effectiveRate,
-      freeMinutes: service.freeMinutes,
     })),
     pendingRequests,
     missing: missingProfileFields(astrologer),

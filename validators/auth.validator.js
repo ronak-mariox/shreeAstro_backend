@@ -188,6 +188,20 @@ const validateAdminOtp = [
   validate,
 ];
 
+/** POST /auth/admin/forgot-password — where to send the reset code. */
+const validateAdminForgotPassword = [
+  body('email').trim().isEmail().withMessage('Enter a valid email address.'),
+  validate,
+];
+
+/** POST /auth/admin/reset-password — the emailed code and a new password. */
+const validateAdminResetPassword = [
+  body('email').trim().isEmail().withMessage('Enter a valid email address.'),
+  body('code').trim().matches(OTP_PATTERN).withMessage('Enter the 6-digit code.'),
+  body('password').isLength({ min: 6 }).withMessage('Password must be at least 6 characters.'),
+  validate,
+];
+
 module.exports = {
   validateRegister,
   validateAstrologerRegister,
@@ -197,4 +211,6 @@ module.exports = {
   validateGoogleLogin,
   validateAdminLogin,
   validateAdminOtp,
+  validateAdminForgotPassword,
+  validateAdminResetPassword,
 };

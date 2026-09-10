@@ -1,0 +1,226 @@
+[
+  {
+    "id": "sun",
+    "is_strong": true,
+    "name": "Sun",
+    "required_minimum_virupa": 390,
+    "strength_percent_of_minimum": 116.438634,
+    "total_shadbala_rupa": 7.568511,
+    "total_shadbala_virupa": 454.110674,
+    "components": {
+      "cheshta_bala": 50.68003,
+      "dig_bala": 20.68003,
+      "drik_bala": 18.770382,
+      "naisargika_bala": 60,
+      "kala_bala": {
+        "abda_masa_vara_hora": 0,
+        "ayana": 48.243249,
+        "natonnata": 32.5,
+        "paksha": 41.723619,
+        "total": 122.466868,
+        "tribhaga": 0,
+        "yuddha_correction": 0
+      },
+      "sthana_bala": {
+        "drekkana": 0,
+        "kendradi": 60,
+        "ojayugma": 0,
+        "saptavargaja": 97.5,
+        "total": 181.513364,
+        "uccha": 24.013364
+      }
+    }
+  },
+  {
+    "id": "moon",
+    "is_strong": true,
+    "name": "Moon",
+    "required_minimum_virupa": 360,
+    "strength_percent_of_minimum": 105.379017,
+    "total_shadbala_rupa": 6.322741,
+    "total_shadbala_virupa": 379.364463,
+    "components": {
+      "cheshta_bala": 41.723619,
+      "dig_bala": 2.403649,
+      "drik_bala": 23.852454,
+      "naisargika_bala": 51.43,
+      "kala_bala": {
+        "abda_masa_vara_hora": 0,
+        "ayana": 20.384771,
+        "natonnata": 27.5,
+        "paksha": 41.723619,
+        "total": 89.60839,
+        "tribhaga": 0,
+        "yuddha_correction": 0
+      },
+      "sthana_bala": {
+        "drekkana": 15,
+        "kendradi": 15,
+        "ojayugma": 30,
+        "saptavargaja": 63.75,
+        "total": 170.346351,
+        "uccha": 46.596351
+      }
+    }
+  },
+  {
+    "id": "mars",
+    "is_strong": true,
+    "name": "Mars",
+    "required_minimum_virupa": 300,
+    "strength_percent_of_minimum": 122.624784,
+    "total_shadbala_rupa": 6.131239,
+    "total_shadbala_virupa": 367.874352,
+    "components": {
+      "cheshta_bala": 24.315152,
+      "dig_bala": 2.927659,
+      "drik_bala": 8.700725,
+      "naisargika_bala": 17.14,
+      "kala_bala": {
+        "abda_masa_vara_hora": 135,
+        "ayana": 22.525426,
+        "natonnata": 27.5,
+        "paksha": 18.276381,
+        "total": 203.301807,
+        "tribhaga": 0,
+        "yuddha_correction": 0
+      },
+      "sthana_bala": {
+        "drekkana": 0,
+        "kendradi": 15,
+        "ojayugma": 0,
+        "saptavargaja": 78.75,
+        "total": 111.489008,
+        "uccha": 17.739008
+      }
+    }
+  },
+  {
+    "id": "mercury",
+    "is_strong": true,
+    "name": "Mercury",
+    "required_minimum_virupa": 420,
+    "strength_percent_of_minimum": 124.660133,
+    "total_shadbala_rupa": 8.726209,
+    "total_shadbala_virupa": 523.572558,
+    "components": {
+      "cheshta_bala": 10.449762,
+      "dig_bala": 45.004848,
+      "drik_bala": -2.314658,
+      "naisargika_bala": 25.71,
+      "kala_bala": {
+        "abda_masa_vara_hora": 0,
+        "ayana": 41.753836,
+        "natonnata": 60,
+        "paksha": 41.723619,
+        "total": 203.477454,
+        "tribhaga": 60,
+        "yuddha_correction": 0
+      },
+      "sthana_bala": {
+        "drekkana": 15,
+        "kendradi": 30,
+        "ojayugma": 30,
+        "saptavargaja": 116.25,
+        "total": 241.245152,
+        "uccha": 49.995152
+      }
+    }
+  },
+  {
+    "id": "jupiter",
+    "is_strong": true,
+    "name": "Jupiter",
+    "required_minimum_virupa": 390,
+    "strength_percent_of_minimum": 109.701643,
+    "total_shadbala_rupa": 7.130607,
+    "total_shadbala_virupa": 427.836407,
+    "components": {
+      "cheshta_bala": 36.888298,
+      "dig_bala": 16.011939,
+      "drik_bala": 33.373881,
+      "naisargika_bala": 34.29,
+      "kala_bala": {
+        "abda_masa_vara_hora": 0,
+        "ayana": 3.495063,
+        "natonnata": 32.5,
+        "paksha": 41.723619,
+        "total": 137.718682,
+        "tribhaga": 60,
+        "yuddha_correction": 0
+      },
+      "sthana_bala": {
+        "drekkana": 0,
+        "kendradi": 30,
+        "ojayugma": 15,
+        "saptavargaja": 106.875,
+        "total": 169.553606,
+        "uccha": 17.678606
+      }
+    }
+  },
+  {
+    "id": "venus",
+    "is_strong": true,
+    "name": "Venus",
+    "required_minimum_virupa": 330,
+    "strength_percent_of_minimum": 125.33869,
+    "total_shadbala_rupa": 6.893628,
+    "total_shadbala_virupa": 413.617676,
+    "components": {
+      "cheshta_bala": 1.270736,
+      "dig_bala": 38.773046,
+      "drik_bala": 18.975479,
+      "naisargika_bala": 42.86,
+      "kala_bala": {
+        "abda_masa_vara_hora": 15,
+        "ayana": 50.412842,
+        "natonnata": 32.5,
+        "paksha": 41.723619,
+        "total": 139.636461,
+        "tribhaga": 0,
+        "yuddha_correction": 0
+      },
+      "sthana_bala": {
+        "drekkana": 15,
+        "kendradi": 60,
+        "ojayugma": 15,
+        "saptavargaja": 61.875,
+        "total": 172.101954,
+        "uccha": 20.226954
+      }
+    }
+  },
+  {
+    "id": "saturn",
+    "is_strong": true,
+    "name": "Saturn",
+    "required_minimum_virupa": 300,
+    "strength_percent_of_minimum": 129.906678,
+    "total_shadbala_rupa": 6.495334,
+    "total_shadbala_virupa": 389.720033,
+    "components": {
+      "cheshta_bala": 49.3173,
+      "dig_bala": 40.09678,
+      "drik_bala": 41.334252,
+      "naisargika_bala": 8.57,
+      "kala_bala": {
+        "abda_masa_vara_hora": 0,
+        "ayana": 35.986874,
+        "natonnata": 27.5,
+        "paksha": 18.276381,
+        "total": 81.763255,
+        "tribhaga": 0,
+        "yuddha_correction": 0
+      },
+      "sthana_bala": {
+        "drekkana": 0,
+        "kendradi": 30,
+        "ojayugma": 30,
+        "saptavargaja": 91.875,
+        "total": 168.638446,
+        "uccha": 16.763446
+      }
+    }
+  }
+]

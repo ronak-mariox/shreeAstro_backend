@@ -15,6 +15,7 @@ const mongoose = require('mongoose');
 const { connectRedis, redis } = require('../config/redis');
 const { createApp } = require('../app');
 const { hashPassword } = require('../utils/password');
+const astrologyApiClient = require('../services/astrologyApi.client');
 
 const PORT = 5090;
 const BASE = `http://127.0.0.1:${PORT}/api/v1`;
@@ -25,6 +26,16 @@ const check = (label, ok, extra) => {
   else { fail += 1; console.log(`  FAIL ${label}${extra !== undefined ? ` -> ${JSON.stringify(extra)}` : ''}`); }
 };
 const section = (t) => console.log(`\n=== ${t} ===`);
+
+/**
+ * Registering a user now fires services/user.service.js's
+ * enrichZodiacFromBirthDetails in the background (see
+ * controllers/auth.controller.js), which would otherwise hit the real
+ * AstrologyAPI transport. This file doesn't assert on Moon sign / horoscope
+ * content, so an empty geo_details response is enough to make it a silent,
+ * free no-op (no place found -> nothing further is ever fetched).
+ */
+const originalAstrologyRequest = astrologyApiClient.request;
 
 /** Asserts every named path exists on the object (dots walk into it). */
 function hasFields(label, object, fields) {
@@ -49,6 +60,8 @@ async function call(method, p, body) {
 const GET = (p) => call('GET', p);
 const POST = (p, b) => call('POST', p, b);
 const PATCH = (p, b) => call('PATCH', p, b);
+const PUT = (p, b) => call('PUT', p, b);
+const DELETE = (p) => call('DELETE', p);
 
 (async () => {
   await mongoose.connect(process.env.MONGODB_URI);
@@ -56,6 +69,8 @@ const PATCH = (p, b) => call('PATCH', p, b);
   await connectRedis();
   const stale = await redis.keys('*');
   if (stale.length) await redis.del(...stale.map((k) => k.replace('shreeastro-test:', '')));
+
+  astrologyApiClient.request = async () => ({ geonames: [] });
 
   const server = createApp().listen(PORT);
   const Admin = require('../models/Admin');
@@ -144,7 +159,7 @@ const PATCH = (p, b) => call('PATCH', p, b);
 
   const { ChatSession } = require('../models/Chat');
   await ChatSession.updateOne({ _id: chat.chatId }, {
-    startedAt: new Date(Date.now() - 900000), 'billing.freeMinutes': 0,
+    startedAt: new Date(Date.now() - 900000),
   });
   await asUser(`/chats/${chat.chatId}/end`, 'POST');
   await asUser(`/chats/${chat.chatId}/rate`, 'POST', { rating: 5, comment: 'Great.' });
@@ -190,7 +205,7 @@ const PATCH = (p, b) => call('PATCH', p, b);
   hasFields('the user drawer', userDetail.body.user, [
     'id', 'name', 'email', 'phone', 'signup', 'status', 'verified',
     'wallet.balance', 'wallet.totalSpent', 'stats.consultations',
-    'freeConsultation.isUsed', 'birthDetails.dateOfBirth', 'kundlis', 'consultations',
+    'birthDetails.dateOfBirth', 'kundlis', 'consultations',
   ]);
   check('the drawer carries recent consultations',
     userDetail.body.user.consultations.length === 1,
@@ -306,7 +321,7 @@ const PATCH = (p, b) => call('PATCH', p, b);
   const settings = await GET('/admin/settings');
   hasFields('the settings form', settings.body.settings, [
     'commissionPercent', 'minRecharge', 'maxRecharge', 'minPayout',
-    'freeTrialMinutes', 'payoutCycle',
+    'payoutCycle',
     'features.registrationsOpen', 'features.appleSignIn', 'features.googleSignIn',
     'features.aiAssistant', 'features.voiceConsultations',
     'features.autoApproveAstrologers', 'features.adminTwoFactor', 'features.maintenanceMode',
@@ -337,6 +352,25 @@ const PATCH = (p, b) => call('PATCH', p, b);
     'status', 'createdAt',
   ]);
 
+  /** The "Other" third parties — a plain reference record, not a live integration. */
+  const thirdParty = await POST('/admin/third-parties', {
+    name: 'Cashfree', category: 'payment_gateway', identifier: 'acct_9F2K', notes: 'Backup gateway.',
+  });
+  hasFields('a created third party', thirdParty.body.thirdParty, [
+    '_id', 'name', 'category', 'identifier', 'enabled', 'notes', 'updatedAt',
+  ]);
+  const thirdParties = await GET('/admin/third-parties');
+  check('the third-party table', thirdParties.body.items.length === 1, thirdParties.body);
+
+  const thirdPartyId = thirdParty.body.thirdParty._id;
+  const editedThirdParty = await PUT(`/admin/third-parties/${thirdPartyId}`, { enabled: false });
+  check('it can be edited', editedThirdParty.body.thirdParty?.enabled === false, editedThirdParty.body);
+
+  const removedThirdParty = await DELETE(`/admin/third-parties/${thirdPartyId}`);
+  check('and removed', removedThirdParty.body.deleted === true, removedThirdParty.body);
+  const thirdPartiesAfter = await GET('/admin/third-parties');
+  check('gone from the table', thirdPartiesAfter.body.items.length === 0, thirdPartiesAfter.body);
+
   /* ------------------------------------------------------- AuditLogsPage */
   section('AuditLogsPage');
   const logs = await GET('/admin/audit-logs?limit=200');
@@ -346,13 +380,19 @@ const PATCH = (p, b) => call('PATCH', p, b);
   check('every change made above was logged', logs.body.items.length >= 6, logs.body.total);
   check('the areas match the page filters',
     logs.body.items.every((row) =>
-      ['Users', 'Astrologers', 'Consultations', 'Payments', 'Wallets', 'Content', 'Settings']
+      ['Users', 'Astrologers', 'Consultations', 'Payments', 'Wallets', 'Content', 'Settings', 'Third parties']
         .includes(row.area)),
     [...new Set(logs.body.items.map((r) => r.area))]);
+
+  astrologyApiClient.request = originalAstrologyRequest;
 
   console.log(`\n${pass} passed, ${fail} failed`);
   server.close();
   await mongoose.disconnect();
   await redis.quit();
   process.exit(fail ? 1 : 0);
-})().catch((e) => { console.error('CRASHED:', e); process.exit(1); });
+})().catch((e) => {
+  astrologyApiClient.request = originalAstrologyRequest;
+  console.error('CRASHED:', e);
+  process.exit(1);
+});

@@ -1,0 +1,13 @@
+{
+  "summary": "Following are the puja suggestions based on your horoscope and planetary combinations.",
+  "suggestions": [
+    {
+      "status": true,
+      "priority": 3,
+      "title": "Nakshatra Pujan",
+      "puja_id": "NAKSHATRA_PUJA",
+      "summary": "Moon nakshatra is one of the most important nakshatra is horoscope. In horoscope, fifth, seventh and ninth houses are for children, life partner and luck respectively. And if their lords are in vedha (obstructive position) with Moon naksahtra then various hardships might be faced in your life. To reduce the effect of obsctructions and make your constellations in sync with other house lords, Nakshatra Puja is recommended.",
+      "one_line": "Seventh house lord is in VIPAT vedha with your Moon nakshatra and therefore it is recommended that you perform nakshatra puja to mitigate evil effects of vedha."
+    }
+  ]
+}

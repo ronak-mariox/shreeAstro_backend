@@ -154,6 +154,20 @@ router.patch(
   adminController.setIntegrationEnabled,
 );
 
+/** The "Other" list — anything not one of the six fixed providers above. */
+router.get('/third-parties', requirePermission('settings.view'), adminController.listThirdParties);
+router.post('/third-parties', requirePermission('settings.manage'), adminController.saveThirdParty);
+router.put(
+  '/third-parties/:thirdPartyId',
+  requirePermission('settings.manage'),
+  adminController.saveThirdParty,
+);
+router.delete(
+  '/third-parties/:thirdPartyId',
+  requirePermission('settings.manage'),
+  adminController.deleteThirdParty,
+);
+
 /* ----------------------------------------------------------- admin team */
 
 router.get('/team', requirePermission('admins.manage'), adminController.listAdmins);

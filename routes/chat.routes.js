@@ -10,6 +10,7 @@
 const express = require('express');
 
 const chatController = require('../controllers/chat.controller');
+const chatValidator = require('../validators/chat.validator');
 const { authenticate, authorize } = require('../middlewares/auth.middleware');
 
 const router = express.Router();
@@ -20,11 +21,12 @@ router.use(authenticate, authorize('user', 'astrologer'));
 router.get('/', chatController.list);
 
 /**
- * The AI assistant. Declared before /:chatId so that "ai" is read as the
- * assistant and not as a chat id.
+ * The AI assistant, and the seeker's balance precheck. Declared before
+ * /:chatId so "ai" and "precheck" are read as themselves, not as a chat id.
  */
 router.get('/ai', authorize('user'), chatController.aiThread);
 router.post('/ai/messages', authorize('user'), chatController.askAi);
+router.post('/precheck', authorize('user'), chatValidator.precheck, chatController.precheck);
 
 /** The seeker's side. */
 router.post('/', authorize('user'), chatController.request);
@@ -36,6 +38,7 @@ router.post('/:chatId/accept', authorize('astrologer'), chatController.accept);
 router.post('/:chatId/reject', authorize('astrologer'), chatController.reject);
 
 /** Either side. */
+router.get('/:chatId', chatValidator.chatIdParam, chatController.state);
 router.post('/:chatId/end', chatController.end);
 router.get('/:chatId/messages', chatController.messages);
 router.post('/:chatId/messages', chatController.send);

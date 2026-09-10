@@ -10,12 +10,14 @@
  * which one was right. One write path means the rows always add up.
  */
 
+const mongoose = require('mongoose');
 const User = require('../models/User');
 const Astrologer = require('../models/Astrologer');
 const AstrologerProfile = require('../models/AstrologerProfile');
 const WalletTransaction = require('../models/WalletTransaction');
 const Withdrawal = require('../models/Withdrawal');
 const ApiError = require('../utils/ApiError');
+const { istDateString, startOfIstDay } = require('../utils/istDate');
 const settingsService = require('./settings.service');
 const notificationService = require('./notification.service');
 
@@ -50,6 +52,15 @@ async function post({
   payment,
   createdByAdmin,
   status = 'success',
+  /**
+   * Only ever passed by a caller that needs this write to live or die with
+   * others in one atomic unit — see services/chat.service.js's billOneMinute,
+   * which debits the seeker, credits the astrologer and moves the session
+   * forward all inside one Mongo transaction. Every other call site omits
+   * this and gets its usual single-document atomicity from the `findOneAndUpdate`
+   * filter guard below, same as always.
+   */
+  session,
 }) {
   const rupees = Math.round(Number(amount));
   if (!Number.isFinite(rupees) || rupees <= 0) {
@@ -80,17 +91,24 @@ async function post({
       update.$inc[direction === 'credit' ? 'wallet.totalAdded' : 'wallet.totalSpent'] = rupees;
       update.$set['wallet.lastTransactionAt'] = new Date();
     } else if (direction === 'credit') {
-      update.$inc['earnings.today'] = rupees;
-      update.$inc['earnings.thisMonth'] = rupees;
+      /**
+       * `today` and `thisMonth` are not kept here — there is no midnight or
+       * month-boundary job to reset a counter, so one that only ever grew
+       * would drift into meaninglessness. They're computed live instead, see
+       * `getAstrologerEarnings` below. `lifetime` has no such boundary, so it
+       * stays a running total.
+       */
       update.$inc['earnings.lifetime'] = rupees;
     }
   }
 
-  const account = await Model.findOneAndUpdate(filter, update, { returnDocument: 'after' });
+  const account = await Model.findOneAndUpdate(filter, update, { session, returnDocument: 'after' });
 
   if (!account) {
     /** Either there is no such account, or the balance guard refused. */
-    const exists = await Model.exists({ _id: ownerId });
+    const existsQuery = Model.exists({ _id: ownerId });
+    if (session) existsQuery.session(session);
+    const exists = await existsQuery;
     throw exists
       ? ApiError.badRequest('Not enough balance.', undefined)
       : ApiError.notFound('Account not found.');
@@ -98,20 +116,26 @@ async function post({
 
   const balanceAfter = isUser ? account.wallet.balance : account.earnings.balance;
 
-  return WalletTransaction.create({
-    ownerRole,
-    owner: ownerId,
-    direction,
-    type,
-    status,
-    amount: rupees,
-    balanceAfter,
-    title,
-    description,
-    chatSession,
-    payment,
-    createdByAdmin,
-  });
+  const [transaction] = await WalletTransaction.create(
+    [
+      {
+        ownerRole,
+        owner: ownerId,
+        direction,
+        type,
+        status,
+        amount: rupees,
+        balanceAfter,
+        title,
+        description,
+        chatSession,
+        payment,
+        createdByAdmin,
+      },
+    ],
+    { session },
+  );
+  return transaction;
 }
 
 /** What a seeker's wallet header shows. */
@@ -123,13 +147,66 @@ async function getUserWallet(userId) {
   return user.wallet;
 }
 
-/** What an astrologer's wallet header shows. */
+/**
+ * IST midnight today, and the 1st of this IST month at IST midnight — not the
+ * server process's own local midnight, which would put "today" on the wrong
+ * side of the boundary for hours at a time on a server not itself running in
+ * IST (most cloud hosts default to UTC).
+ */
+function periodStarts() {
+  const today = istDateString();
+  const startOfToday = startOfIstDay(today);
+  const startOfMonth = startOfIstDay(`${today.slice(0, 7)}-01`);
+
+  return { startOfToday, startOfMonth };
+}
+
+/**
+ * Sum of an astrologer's successful credits since `since`.
+ *
+ * `astrologerId` arrives as a plain string here — every access token encodes
+ * `sub` as `String(accountId)` (see utils/token.js), so `req.account.accountId`
+ * is never a real ObjectId. `Model.find()` casts a string id automatically,
+ * but an aggregation `$match` does not — it compares the raw BSON types, and a
+ * string is never `===` an ObjectId, so this silently matched nothing at all
+ * (not even the wrong rows — zero rows) until cast explicitly here.
+ */
+async function sumCreditsSince(astrologerId, since) {
+  const [row] = await WalletTransaction.aggregate([
+    {
+      $match: {
+        owner: new mongoose.Types.ObjectId(astrologerId),
+        ownerRole: 'astrologer',
+        direction: 'credit',
+        status: 'success',
+        createdAt: { $gte: since },
+      },
+    },
+    { $group: { _id: null, total: { $sum: '$amount' } } },
+  ]);
+  return row?.total || 0;
+}
+
+/**
+ * What an astrologer's wallet header shows.
+ *
+ * `today` and `thisMonth` are summed from the ledger on every read rather than
+ * stored as running counters, so they can't drift into always equalling
+ * `lifetime` — see `post()`'s comment above.
+ */
 async function getAstrologerEarnings(astrologerId) {
   const astrologer = await Astrologer.findById(astrologerId).select('earnings');
   if (!astrologer) {
     throw ApiError.notFound('Account not found.');
   }
-  return astrologer.earnings;
+
+  const { startOfToday, startOfMonth } = periodStarts();
+  const [today, thisMonth] = await Promise.all([
+    sumCreditsSince(astrologerId, startOfToday),
+    sumCreditsSince(astrologerId, startOfMonth),
+  ]);
+
+  return { ...astrologer.earnings.toObject(), today, thisMonth };
 }
 
 /**

@@ -12,6 +12,8 @@ const { connectDatabase, disconnectDatabase } = require('./config/database');
 const { connectRedis, disconnectRedis } = require('./config/redis');
 const { createApp } = require('./app');
 const { initSocket } = require('./socket');
+const { scheduleHoroscopePrefetch } = require('./jobs/horoscopePrefetch.job');
+const { scheduleChatBillingSweep } = require('./jobs/chatBilling.job');
 
 async function start() {
   await connectDatabase();
@@ -21,6 +23,28 @@ async function start() {
   const app = createApp();
   const server = http.createServer(app);
   initSocket(server);
+
+  /**
+   * Only meaningful on this persistent process, not the Vercel serverless
+   * entry (api/index.js) — a cold-start function cannot hold a cron timer
+   * alive between invocations, and never imports this module at all.
+   *
+   * On by default — see config/env.js's comment: this draws from its own
+   * separate horoscopeMonthlyCreditLimit, not the kundli-generation budget,
+   * so it can't starve new kundlis of credits. Set HOROSCOPE_PREFETCH_ENABLED
+   * to `false` in `.env` for a dev sandbox that shouldn't spend it.
+   */
+  if (env.astrologyApi.horoscopePrefetchEnabled) {
+    scheduleHoroscopePrefetch();
+  } else {
+    console.log('[horoscopePrefetch] disabled (HOROSCOPE_PREFETCH_ENABLED=false) — not scheduling the daily cron.');
+  }
+
+  /**
+   * Real money, not an external credit spend — always on, no env toggle.
+   * Same persistent-process-only caveat as the horoscope job above.
+   */
+  scheduleChatBillingSweep();
 
   server.listen(env.port, () => {
     console.log(`[http] Shree Astro API on :${env.port} (${env.nodeEnv})`);

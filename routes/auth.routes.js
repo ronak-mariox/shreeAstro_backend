@@ -14,6 +14,8 @@ const {
   validateGoogleLogin,
   validateAdminLogin,
   validateAdminOtp,
+  validateAdminForgotPassword,
+  validateAdminResetPassword,
 } = require('../validators/auth.validator');
 
 const router = express.Router();
@@ -52,6 +54,16 @@ router.post('/google', validateGoogleLogin, authController.loginGoogle);
 router.post('/admin/login', validateAdminLogin, authController.loginAdmin);
 router.post('/admin/login/verify', validateAdminOtp, authController.verifyAdminOtp);
 router.post('/admin/login/resend', authController.resendAdminOtp);
+
+/**
+ * Forgotten password: the same emailed-code mechanism as login's second
+ * factor, just under its own purpose so a login code and a reset code can
+ * never stand in for each other. Never returns a session — the admin proves
+ * the new password by signing in with it afterward, same as a first sign-in.
+ */
+router.post('/admin/forgot-password', validateAdminForgotPassword, authController.forgotAdminPassword);
+router.post('/admin/forgot-password/resend', authController.resendAdminPasswordReset);
+router.post('/admin/reset-password', validateAdminResetPassword, authController.resetAdminPassword);
 
 /**
  * Token upkeep. Both are deliberately open: refresh is proved by the refresh

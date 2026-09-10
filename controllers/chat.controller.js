@@ -10,6 +10,25 @@
 const chatService = require('../services/chat.service');
 const asyncHandler = require('../utils/asyncHandler');
 
+/** POST /api/v1/chats/precheck — is the seeker's balance enough to start, and for how many minutes? Creates nothing. */
+const precheck = asyncHandler(async (req, res) => {
+  const result = await chatService.precheckSession({
+    userId: req.account.accountId,
+    astrologerId: req.body.astrologerId,
+    channel: req.body.channel || 'chat',
+  });
+  return res.json(result);
+});
+
+/** GET /api/v1/chats/:chatId — one session's state, with server-computed remaining minutes. */
+const state = asyncHandler(async (req, res) => {
+  const result = await chatService.getSessionState({
+    chatId: req.params.chatId,
+    accountId: req.account.accountId,
+  });
+  return res.json(result);
+});
+
 /** POST /api/v1/chats — the seeker asks an astrologer for a chat. */
 const request = asyncHandler(async (req, res) => {
   const chat = await chatService.requestChat({
@@ -23,7 +42,6 @@ const request = asyncHandler(async (req, res) => {
     chatId: String(chat._id),
     status: chat.status,
     ratePerMinute: chat.billing.ratePerMinute,
-    freeMinutes: chat.billing.freeMinutes,
     expiresInSeconds: chatService.REQUEST_TIMEOUT_SECONDS,
   });
 });
@@ -179,4 +197,4 @@ const askAi = asyncHandler(async (req, res) => {
   return res.status(201).json(result);
 });
 
-module.exports = { aiThread, askAi, request, accept, reject, cancel, end, rate, list, messages, send };
+module.exports = { aiThread, askAi, precheck, state, request, accept, reject, cancel, end, rate, list, messages, send };

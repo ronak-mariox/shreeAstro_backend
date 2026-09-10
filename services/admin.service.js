@@ -16,6 +16,7 @@ const { ChatSession } = require('../models/Chat');
 const WalletTransaction = require('../models/WalletTransaction');
 const Withdrawal = require('../models/Withdrawal');
 const Article = require('../models/Article');
+const ThirdParty = require('../models/ThirdParty');
 const Admin = require('../models/Admin');
 const ApiError = require('../utils/ApiError');
 const walletService = require('./wallet.service');
@@ -208,7 +209,6 @@ async function getUserDetail(userId) {
     isEmailVerified: user.isEmailVerified,
     wallet: user.wallet,
     stats: user.stats,
-    freeConsultation: user.freeConsultation,
     gender: profile?.gender,
     birthDetails: profile?.birthDetails,
     zodiac: profile?.zodiac,
@@ -459,7 +459,6 @@ async function approveAstrologer({ astrologerId, admin, services = [], commissio
       isEnabled: service.isEnabled !== false,
       ratePerMinute: Number(service.ratePerMinute),
       offerPercent: Number(service.offerPercent) || 0,
-      freeMinutes: Number(service.freeMinutes) || 0,
     }));
   }
 
@@ -702,7 +701,6 @@ async function getConsultationDetail(chatId, { messageLimit = 50 } = {}) {
       : null,
     billing: {
       ratePerMinute: chat.billing?.ratePerMinute || 0,
-      freeMinutes: chat.billing?.freeMinutes || 0,
       commissionPercent: chat.billing?.commissionPercent || 0,
       amountCharged: charged,
       astrologerEarning: earned,
@@ -1300,6 +1298,39 @@ async function deleteArticle(articleId) {
   return { deleted: true };
 }
 
+/* -------------------------------------------------------------------------- */
+/* Third parties (the "Other" list — see models/ThirdParty.js's own note)     */
+/* -------------------------------------------------------------------------- */
+
+async function listThirdParties() {
+  const items = await ThirdParty.find().sort({ createdAt: -1 });
+  return { items };
+}
+
+async function saveThirdParty({ thirdPartyId, changes, admin }) {
+  if (thirdPartyId) {
+    const thirdParty = await ThirdParty.findByIdAndUpdate(
+      thirdPartyId,
+      { $set: { ...changes, updatedBy: admin._id } },
+      { returnDocument: 'after', runValidators: true },
+    );
+    if (!thirdParty) {
+      throw ApiError.notFound('Third party not found.');
+    }
+    return thirdParty;
+  }
+
+  return ThirdParty.create({ ...changes, createdBy: admin._id, updatedBy: admin._id });
+}
+
+async function deleteThirdParty(thirdPartyId) {
+  const thirdParty = await ThirdParty.findByIdAndDelete(thirdPartyId);
+  if (!thirdParty) {
+    throw ApiError.notFound('Third party not found.');
+  }
+  return { deleted: true };
+}
+
 module.exports = {
   getDashboard,
   createAstrologer,
@@ -1324,6 +1355,9 @@ module.exports = {
   listArticles,
   saveArticle,
   deleteArticle,
+  listThirdParties,
+  saveThirdParty,
+  deleteThirdParty,
   listWallets,
   adjustWallet,
   listAdmins,

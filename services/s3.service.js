@@ -16,6 +16,22 @@ const integrationsService = require('./integrations.service');
 let cachedClient = null;
 let cachedKey = null;
 
+/** A real AWS region code, e.g. "ap-south-1" or "us-gov-west-1". */
+const REGION_CODE_PATTERN = /[a-z]{2}(?:-gov)?-[a-z]+-\d+/i;
+
+/**
+ * The Third Parties tab takes free-text, and the AWS Console's own region
+ * dropdown shows "Asia Pacific (Mumbai) ap-south-1" — pasting that whole
+ * label in (rather than just the trailing code) otherwise reaches the SDK
+ * verbatim and fails with "not a valid hostname component" on every upload.
+ * Extracting the code here fixes it regardless of what's actually saved,
+ * rather than depending on the panel entry being edited correctly.
+ */
+function normalizeRegion(region) {
+  const match = String(region || '').match(REGION_CODE_PATTERN);
+  return match ? match[0].toLowerCase() : region;
+}
+
 function clientFor(config) {
   const key = `${config.region}:${config.accessKeyId}`;
   if (cachedClient && cachedKey === key) {
@@ -33,7 +49,7 @@ function clientFor(config) {
 async function currentConfig() {
   const config = await integrationsService.get('awsS3');
   const complete = Boolean(config?.accessKeyId && config?.secretAccessKey && config?.bucket && config?.region);
-  return complete ? config : null;
+  return complete ? { ...config, region: normalizeRegion(config.region) } : null;
 }
 
 /** Whether upload.middleware.js should route new uploads to S3 instead of disk. */

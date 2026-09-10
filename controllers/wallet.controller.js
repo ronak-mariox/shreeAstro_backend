@@ -6,6 +6,7 @@
  */
 
 const walletService = require('../services/wallet.service');
+const chatService = require('../services/chat.service');
 const asyncHandler = require('../utils/asyncHandler');
 
 /** GET /api/v1/wallet — balance and totals. */
@@ -52,6 +53,9 @@ const confirmTopUp = asyncHandler(async (req, res) => {
     paymentId: req.body.paymentId,
     method: req.body.method,
   });
+
+  /** A top-up is also what wakes up any of this seeker's own chats paused for insufficient balance (chat.service.js's tickOneSession). */
+  await chatService.resumePausedSessionsForUser(req.account.accountId);
 
   return res.json({
     transaction: {

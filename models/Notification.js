@@ -17,6 +17,7 @@ const NOTIFICATION_TYPES = [
   'consultation_request',
   'consultation_started',
   'consultation_ended',
+  'consultation_missed',
   'message',
   'wallet_credit',
   'wallet_debit',

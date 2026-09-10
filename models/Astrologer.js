@@ -57,8 +57,6 @@ const serviceSchema = new Schema(
     offerPercent: { type: Number, default: 0, min: 0, max: 100 },
     /** When the astrologer next opens this service, if scheduled ahead. */
     availableFrom: { type: Date },
-    /** Free minutes this astrologer grants a first-time seeker. */
-    freeMinutes: { type: Number, default: 0, min: 0 },
   },
   { _id: false },
 );
