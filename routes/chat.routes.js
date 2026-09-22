@@ -41,6 +41,8 @@ router.post('/:chatId/reject', authorize('astrologer'), chatController.reject);
 
 /** Either side. */
 router.get('/:chatId', chatValidator.chatIdParam, chatController.state);
+/** The seeker's saved kundli — what the astrologer's chat header and "Generate Kundli" open. */
+router.get('/:chatId/kundli', chatValidator.chatIdParam, chatController.kundli);
 router.post('/:chatId/end', chatController.end);
 router.get('/:chatId/messages', chatController.messages);
 router.post('/:chatId/messages', chatController.send);
