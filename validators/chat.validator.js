@@ -34,18 +34,10 @@ const request = [
   validate,
 ];
 
-/** POST /chats/:chatId/extend */
-const extend = [
-  param('chatId').isMongoId().withMessage('Unknown chat.'),
-  body('packageMinutes').isInt({ min: 1 }).withMessage('Choose a package.'),
-  body('quotedPrice').optional({ values: 'null' }).isFloat({ min: 0 }).withMessage('Invalid price.'),
-  validate,
-];
-
 /** GET /chats/:chatId */
 const chatIdParam = [
   param('chatId').isMongoId().withMessage('Unknown chat.'),
   validate,
 ];
 
-module.exports = { precheck, request, extend, chatIdParam };
+module.exports = { precheck, request, chatIdParam };

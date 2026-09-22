@@ -166,31 +166,6 @@ async function currentPackageDiscounts() {
   return settings?.packageDiscounts || [];
 }
 
-/**
- * Runs `work(session)` in one Mongo transaction and returns its result. An
- * {@link AbortBilling} thrown inside rolls everything back and comes out as
- * its plain `outcome` instead of an exception — the same convention
- * billNextMinute and acceptChat use.
- */
-async function inTransaction(work) {
-  const session = await mongoose.startSession();
-  let outcome;
-  try {
-    await session.withTransaction(async () => {
-      outcome = await work(session);
-    });
-  } catch (error) {
-    if (error instanceof AbortBilling) {
-      outcome = error.outcome;
-    } else {
-      throw error;
-    }
-  } finally {
-    await session.endSession();
-  }
-  return outcome;
-}
-
 /** A notice in the server's own voice, stored AND pushed live — both sides see it arrive. */
 async function announce(chatId, text, event) {
   const message = await Message.system(chatId, text, event);
@@ -381,6 +356,7 @@ async function requestChat({ userId, astrologerId, channel = 'chat', intake = {}
     billingMode: mode,
     packageMinutes: pkg?.minutes,
     packagePrice: pkgPrice,
+    packageDiscountPercent: pkg?.discountPercent,
     expiresInSeconds: REQUEST_TIMEOUT_SECONDS,
   });
 
@@ -725,19 +701,17 @@ async function billOneMinute(chat, now, session) {
 /**
  * Buys one package on a session: debits the seeker the package price (at the
  * session's own frozen rate), records it in the ChatPackagePurchase ledger,
- * and moves `packageState.endsAt` to `now + minutes`. Every write takes
- * `session`, so it lives or dies with the caller's transaction — acceptChat
- * (the initial package, together with going active) or extendPackage.
+ * and sets `packageState.endsAt` to `now + minutes`. Every write takes
+ * `session`, so it lives or dies with the caller's transaction — acceptChat,
+ * together with the session going active.
  *
  * The astrologer is NOT credited here; their share of package money is
  * settled once at the end (settlePackageEarning), so a future unused-minutes
  * refund never has to claw anything back.
  *
  * Idempotent the same way billOneMinute is: a second purchase for the same
- * `seq` (a double-tapped Extend, a racing accept) hits the ledger's unique
- * index and aborts the whole transaction, debit included. An extension also
- * refuses once the prompt is gone or being closed by the timeout, so an
- * answer racing the auto-end can never charge a closing session.
+ * `seq` (a racing accept) hits the ledger's unique index and aborts the
+ * whole transaction, debit included.
  */
 async function purchasePackage(chat, pkg, kind, now, session) {
   const seq = (chat.billing.packages?.length || 0) + 1;
@@ -808,27 +782,15 @@ async function purchasePackage(chat, pkg, kind, now, session) {
     purchasedAt: now,
   };
 
-  const filter = { _id: chat._id };
-  if (kind === 'extension') {
-    Object.assign(filter, {
-      status: 'active',
-      'packageState.promptedAt': { $ne: null },
-      'packageState.closingAt': null,
-      'packageState.perMinuteStartedAt': null,
-    });
-  }
-  const updated = await ChatSession.updateOne(
-    filter,
+  await ChatSession.updateOne(
+    { _id: chat._id },
     {
       $push: { 'billing.packages': entry },
       $inc: { 'billing.amountCharged': amount, 'billing.packageAmountCharged': amount },
-      $set: { 'packageState.endsAt': endsAt, 'packageState.warnedAt': null, 'packageState.promptedAt': null },
+      $set: { 'packageState.endsAt': endsAt, 'packageState.warnedAt': null },
     },
     { session },
   );
-  if (updated.matchedCount === 0) {
-    throw new AbortBilling({ billed: false, reason: 'not_awaiting_extension' });
-  }
 
   /** Kept in sync in memory too — acceptChat saves this same object right after. */
   chat.billing.packages = [...(chat.billing.packages || []), entry];
@@ -836,7 +798,6 @@ async function purchasePackage(chat, pkg, kind, now, session) {
   chat.billing.packageAmountCharged = (chat.billing.packageAmountCharged || 0) + amount;
   chat.packageState.endsAt = endsAt;
   chat.packageState.warnedAt = null;
-  chat.packageState.promptedAt = null;
 
   return { billed: true, seq, amount, balanceRemaining, endsAt };
 }
@@ -986,16 +947,20 @@ async function tickOneSession(chat, now) {
 }
 
 /**
- * One package session's turn at the sweep. Nothing is ever charged here:
+ * One package session's turn at the sweep. Nothing is ever charged here while
+ * package time lasts:
  *
- *   - `packageWarningSeconds` before the package runs out, warn once;
- *   - once it has run out, open the "Extend consultation?" prompt (the
- *     session freezes — sendMessage refuses — and nothing is charged);
- *   - left unanswered for `packageExtensionResponseSeconds`, end it.
+ *   - `packageWarningSeconds` before the package runs out, warn once. If the
+ *     wallet can't cover even one per-minute minute after it, the warning is
+ *     the ordinary per-minute low-balance one (CHAT_EVENTS.LOW_BALANCE), so
+ *     the app shows its existing Low Balance banner / Recharge popup;
+ *     otherwise it is a plain "package ends soon, then ₹X/min" notice.
+ *   - once it has run out, the session switches to per-minute by itself
+ *     (switchPackageToPerMinute) and the normal per-minute meter takes over —
+ *     including its own pause-on-empty-wallet and top-up-to-resume handling.
  *
- * Every transition is a conditional update, so two overlapping sweeps can't
- * warn twice or prompt twice, and a prompt being answered at the same moment
- * it times out resolves to exactly one of the two (see `closingAt`).
+ * Both transitions are conditional updates, so overlapping sweeps can't warn
+ * twice or switch twice.
  */
 async function tickPackageSession(chat, now) {
   const chatId = String(chat._id);
@@ -1004,49 +969,10 @@ async function tickPackageSession(chat, now) {
     return { chatId, action: 'package_not_started' };
   }
 
-  if (state.promptedAt) {
-    const waitedMs = now.getTime() - state.promptedAt.getTime();
-    if (waitedMs < env.consultation.packageExtensionResponseSeconds * 1000) {
-      return { chatId, action: 'awaiting_extension' };
-    }
-    const claimed = await ChatSession.updateOne(
-      { _id: chat._id, status: 'active', 'packageState.promptedAt': state.promptedAt, 'packageState.closingAt': null },
-      { $set: { 'packageState.closingAt': now } },
-    );
-    if (claimed.modifiedCount === 0) {
-      /** Answered (or already being closed) in the meantime — the next sweep sees the new state. */
-      return { chatId, action: 'awaiting_extension' };
-    }
-    await endChat({ chatId: chat._id, accountId: chat.user, endedBy: 'system', reason: 'package_no_response' });
-    return { chatId, action: 'ended_no_response' };
-  }
-
   const msLeft = state.endsAt.getTime() - now.getTime();
 
   if (msLeft <= 0) {
-    const claimed = await ChatSession.updateOne(
-      { _id: chat._id, status: 'active', 'packageState.promptedAt': null, 'packageState.endsAt': state.endsAt },
-      { $set: { 'packageState.promptedAt': now } },
-    );
-    if (claimed.modifiedCount === 0) {
-      return { chatId, action: 'awaiting_extension' };
-    }
-    chat.packageState.promptedAt = now;
-
-    const balance = await balanceFor(chat.user);
-    const rate = chat.billing.ratePerMinute;
-    emit(roomFor(chat._id), CHAT_EVENTS.PACKAGE_ENDED, {
-      chatId,
-      promptedAt: now,
-      serverTime: now,
-      respondWithinSeconds: env.consultation.packageExtensionResponseSeconds,
-      ratePerMinute: rate,
-      balanceRemaining: balance,
-      perMinuteAffordable: balance >= rate,
-      packages: packageQuotes(rate, balance, await currentPackageDiscounts()),
-    });
-    await announce(chat._id, 'Package time is over. Waiting for the seeker to extend or end the consultation.', 'package_ended');
-    return { chatId, action: 'extension_prompted' };
+    return switchPackageToPerMinute(chat, now);
   }
 
   if (msLeft <= env.consultation.packageWarningSeconds * 1000 && !state.warnedAt) {
@@ -1058,11 +984,27 @@ async function tickPackageSession(chat, now) {
       return { chatId, action: 'package_running' };
     }
     chat.packageState.warnedAt = now;
+
+    const rate = chat.billing.ratePerMinute;
+    const balance = await balanceFor(chat.user);
+    const secondsLeft = Math.ceil(msLeft / 1000);
+    if (balance < rate) {
+      /** Same payload the per-minute check-ahead sends — the app's existing low-balance banner reads it as-is. */
+      emit(roomFor(chat._id), CHAT_EVENTS.LOW_BALANCE, {
+        chatId,
+        exhausted: false,
+        secondsUntilCut: secondsLeft,
+        requiredAmount: rate,
+        balanceRemaining: balance,
+      });
+      return { chatId, action: 'package_warned_low_balance' };
+    }
     emit(roomFor(chat._id), CHAT_EVENTS.PACKAGE_WARNING, {
       chatId,
       endsAt: state.endsAt,
       serverTime: now,
-      secondsLeft: Math.ceil(msLeft / 1000),
+      secondsLeft,
+      ratePerMinute: rate,
     });
     return { chatId, action: 'package_warned' };
   }
@@ -1070,137 +1012,48 @@ async function tickPackageSession(chat, now) {
   return { chatId, action: 'package_running' };
 }
 
-/* -------------------------------------------------------------------------- */
-/* Package sessions: the seeker's answer to "Extend consultation?"           */
-/* -------------------------------------------------------------------------- */
-
-/** Loads a package session that is waiting on the seeker's extend/continue/end answer, or refuses. */
-async function awaitingExtensionChat(chatId, userId) {
-  const [chat, role] = await participantChat(chatId, userId);
-  if (role !== 'user') {
-    throw ApiError.forbidden('Only the seeker can extend a consultation.');
-  }
-  if (chat.status !== 'active') {
-    throw ApiError.badRequest(`This chat is already ${chat.status}.`);
-  }
-  if (!isPackagePhase(chat) || !chat.packageState?.promptedAt || chat.packageState?.closingAt) {
-    throw ApiError.conflict('This consultation is not waiting for an extension.', undefined, 'not_awaiting_extension');
-  }
-  return chat;
-}
-
 /**
- * "Extend with another package": priced at the session's frozen rate,
- * wallet re-checked, then charged in one transaction. The new package starts
- * now — the prompt froze the session, so no time was lost while deciding.
+ * The package has run out: from its end time on, the session is billed per
+ * minute exactly like a per-minute session. `lastBilledAt` is set a minute
+ * before the package end so the per-minute tick finds the first per-minute
+ * minute due at the package end — and it is billed right here, in this same
+ * sweep, by the ordinary per-minute path (tickOneSession). If the wallet
+ * can't cover it, that path pauses the session and sends its usual
+ * low-balance event; a top-up resumes it (resumePausedSessionsForUser), same
+ * as any per-minute chat.
  */
-async function extendPackage({ chatId, userId, packageMinutes, quotedPrice }) {
-  const chat = await awaitingExtensionChat(chatId, userId);
-  const { pkg } = quotePackage({
-    packageMinutes,
-    quotedPrice,
-    ratePerMinute: chat.billing.ratePerMinute,
-    balance: await balanceFor(chat.user),
-    discounts: await currentPackageDiscounts(),
-  });
+async function switchPackageToPerMinute(chat, now) {
+  const chatId = String(chat._id);
+  const switchedAt = chat.packageState.endsAt;
+  const anchor = new Date(switchedAt.getTime() - TICK_INTERVAL_MS);
 
-  const now = new Date();
-  const outcome = await inTransaction(session => purchasePackage(chat, pkg, 'extension', now, session));
-
-  if (!outcome.billed) {
-    if (outcome.reason === 'insufficient_balance') {
-      throw ApiError.badRequest('Not enough balance for this package.', undefined, 'insufficient_balance');
-    }
-    throw ApiError.conflict('This consultation was already extended or has ended.', undefined, 'not_awaiting_extension');
+  const claimed = await ChatSession.updateOne(
+    {
+      _id: chat._id,
+      status: 'active',
+      'packageState.perMinuteStartedAt': null,
+      'packageState.endsAt': switchedAt,
+    },
+    { $set: { 'packageState.perMinuteStartedAt': switchedAt, lastBilledAt: anchor, nextMinuteChecked: false } },
+  );
+  if (claimed.modifiedCount === 0) {
+    return { chatId, action: 'package_running' };
   }
+  chat.packageState.perMinuteStartedAt = switchedAt;
+  chat.lastBilledAt = anchor;
+  chat.nextMinuteChecked = false;
 
-  emit(roomFor(chat._id), CHAT_EVENTS.PACKAGE_EXTENDED, {
-    chatId: String(chat._id),
-    packageMinutes: pkg.minutes,
-    amount: outcome.amount,
-    endsAt: outcome.endsAt,
-    serverTime: now,
-    balanceRemaining: outcome.balanceRemaining,
-  });
-  await announce(chat._id, `Consultation extended by ${pluralMinutes(pkg.minutes)}.`, 'package_extended');
-
-  return {
-    chatId: String(chat._id),
-    packageMinutes: pkg.minutes,
-    amount: outcome.amount,
-    endsAt: outcome.endsAt,
-    serverTime: now,
-    balanceRemaining: outcome.balanceRemaining,
-  };
-}
-
-/**
- * "Continue per-minute": from this instant the ordinary per-minute meter
- * runs, exactly as for a per-minute session — its first minute is charged
- * upfront (as acceptChat does), in the same transaction that flips the
- * session over, so the switch and the charge land together or not at all.
- */
-async function continuePerMinute({ chatId, userId }) {
-  const chat = await awaitingExtensionChat(chatId, userId);
   const rate = chat.billing.ratePerMinute;
-  const balance = await balanceFor(chat.user);
-  if (balance < rate) {
-    throw ApiError.badRequest(
-      `You need ₹${rate - balance} more in your wallet to continue per-minute (₹${rate}/min).`,
-      undefined,
-      'insufficient_balance',
-    ).withDetails({ price: rate, balance, shortfallAmount: rate - balance });
-  }
-
-  const now = new Date();
-  const outcome = await inTransaction(async session => {
-    const claimed = await ChatSession.updateOne(
-      {
-        _id: chat._id,
-        status: 'active',
-        'packageState.promptedAt': { $ne: null },
-        'packageState.closingAt': null,
-        'packageState.perMinuteStartedAt': null,
-      },
-      { $set: { 'packageState.perMinuteStartedAt': now, 'packageState.promptedAt': null } },
-      { session },
-    );
-    if (claimed.modifiedCount === 0) {
-      throw new AbortBilling({ billed: false, reason: 'not_awaiting_extension' });
-    }
-    const minute = await billOneMinute(chat, now, session);
-    if (!minute.billed) {
-      /** Roll the switch back too — never "per-minute" without the minute that pays for it. */
-      throw new AbortBilling(minute);
-    }
-    return minute;
-  });
-
-  if (!outcome.billed) {
-    if (outcome.reason === 'insufficient_balance') {
-      throw ApiError.badRequest('Not enough balance to continue per-minute.', undefined, 'insufficient_balance');
-    }
-    throw ApiError.conflict('This consultation was already extended or has ended.', undefined, 'not_awaiting_extension');
-  }
-
-  chat.packageState.perMinuteStartedAt = now;
-  chat.packageState.promptedAt = null;
-
   emit(roomFor(chat._id), CHAT_EVENTS.PER_MINUTE_STARTED, {
-    chatId: String(chat._id),
-    perMinuteStartedAt: now,
+    chatId,
+    perMinuteStartedAt: switchedAt,
     serverTime: now,
     ratePerMinute: rate,
-    balanceRemaining: outcome.balanceRemaining,
   });
-  await announce(chat._id, `Consultation continues at ₹${rate}/min.`, 'per_minute_started');
+  await announce(chat._id, `Package time is over. The consultation continues at ₹${rate}/min.`, 'per_minute_started');
 
-  return {
-    chatId: String(chat._id),
-    perMinuteStartedAt: now,
-    ratePerMinute: rate,
-    balanceRemaining: outcome.balanceRemaining,
-  };
+  const perMinute = await tickOneSession(chat, now);
+  return { ...perMinute, chatId, switchedToPerMinute: true };
 }
 
 /* -------------------------------------------------------------------------- */
@@ -1259,10 +1112,9 @@ async function resumeSessionsForAstrologer(astrologerId, now = new Date()) {
       /** A fresh check-ahead window for whatever minute is now due, since the one before the pause is moot. */
       nextMinuteChecked: false,
     };
-    /** A package's clock (and an open extend prompt's) is pushed forward by the outage too — the seeker keeps every paid second. */
-    if (isPackagePhase(chat)) {
-      if (chat.packageState?.endsAt) set['packageState.endsAt'] = new Date(chat.packageState.endsAt.getTime() + pausedMs);
-      if (chat.packageState?.promptedAt) set['packageState.promptedAt'] = new Date(chat.packageState.promptedAt.getTime() + pausedMs);
+    /** A package's clock is pushed forward by the outage too — the seeker keeps every paid second. */
+    if (isPackagePhase(chat) && chat.packageState?.endsAt) {
+      set['packageState.endsAt'] = new Date(chat.packageState.endsAt.getTime() + pausedMs);
     }
 
     // eslint-disable-next-line no-await-in-loop
@@ -1507,8 +1359,11 @@ async function endChat({ chatId, accountId, endedBy, reason }) {
   } else {
     /** Switched to per-minute: true up only the per-minute tail, measured from the switch — never the package time before it. */
     const perMinuteSeconds = Math.max(Math.round((now.getTime() - perMinuteSince.getTime()) / 1000), 0);
+    /** Never below what was already billed — the switch charges its first minute upfront, before any of it has elapsed. */
     minutesOwed =
-      reason === 'timeout' || reason === 'astrologer_disconnected' ? chat.minutesBilled : minutesFor(perMinuteSeconds);
+      reason === 'timeout' || reason === 'astrologer_disconnected'
+        ? chat.minutesBilled
+        : Math.max(chat.minutesBilled, minutesFor(perMinuteSeconds));
   }
 
   while (chat.minutesBilled < minutesOwed) {
@@ -1820,26 +1675,20 @@ function toChatRow(chat, viewerRole) {
 
 /**
  * Where a package session stands, for a screen opening or reconnecting —
- * `serverTime` lets the app count down against the server's clock rather
- * than trust its own. `undefined` for a per-minute session. The extension
- * options are included (priced against the live balance) only while the
- * prompt is open, so a reconnecting app can re-show it straight away.
+ * `serverTime` (sent alongside) lets the app count down against the server's
+ * clock rather than trust its own. `undefined` for a per-minute session.
+ * `phase` is 'package' while package time lasts and 'per_minute' once it has
+ * run out and the session is billing per minute.
  */
-async function packageViewFor(chat, now = new Date()) {
+function packageViewFor(chat) {
   if (chat.billing?.mode !== 'package') {
     return undefined;
   }
   const state = chat.packageState || {};
-  const phase = state.perMinuteStartedAt ? 'per_minute' : state.promptedAt ? 'awaiting_extension' : 'package';
-  const responseSeconds = env.consultation.packageExtensionResponseSeconds;
-
-  const view = {
-    phase,
+  return {
+    phase: state.perMinuteStartedAt ? 'per_minute' : 'package',
     endsAt: state.endsAt,
     warningSeconds: env.consultation.packageWarningSeconds,
-    promptedAt: state.promptedAt,
-    respondBy: state.promptedAt ? new Date(state.promptedAt.getTime() + responseSeconds * 1000) : undefined,
-    respondWithinSeconds: responseSeconds,
     perMinuteStartedAt: state.perMinuteStartedAt,
     requestedMinutes: chat.billing.requestedPackageMinutes,
     minutesPurchased: (chat.billing.packages || []).reduce((sum, entry) => sum + entry.minutes, 0),
@@ -1854,14 +1703,6 @@ async function packageViewFor(chat, now = new Date()) {
       purchasedAt: entry.purchasedAt,
     })),
   };
-
-  if (phase === 'awaiting_extension' && chat.status === 'active') {
-    const balance = await balanceFor(chat.user);
-    view.balanceRemaining = balance;
-    view.perMinuteAffordable = balance >= chat.billing.ratePerMinute;
-    view.packages = packageQuotes(chat.billing.ratePerMinute, balance, await currentPackageDiscounts());
-  }
-  return view;
 }
 
 /**
@@ -1889,7 +1730,7 @@ async function getSessionState({ chatId, accountId }) {
     endedAt: chat.endedAt,
     endReason: chat.endReason,
     billingMode: chat.billing.mode,
-    package: await packageViewFor(chat),
+    package: packageViewFor(chat),
     serverTime: new Date(),
   };
 }
@@ -1983,6 +1824,9 @@ async function pendingRequests(astrologerId) {
     ratePerMinute: chat.billing.ratePerMinute,
     billingMode: chat.billing.mode,
     packageMinutes: chat.billing.requestedPackageMinutes,
+    /** What the seeker will actually pay for the package (after any admin discount), and the discount itself — for the request card. */
+    packagePrice: chat.billing.requestedPackagePrice,
+    packageDiscountPercent: chat.billing.requestedPackageDiscountPercent,
     requestedAt: chat.requestedAt,
   }));
 }
@@ -2026,7 +1870,7 @@ async function joinChat({ chatId, accountId, lastSeq = 0 }) {
     messages: missed.map(message => message.toSocketPayload()),
     /** Package sessions: the true current package clock/prompt, for the same reason as `paused` above. */
     billingMode: chat.billing?.mode,
-    package: await packageViewFor(chat),
+    package: packageViewFor(chat),
     serverTime: new Date(),
   };
 }
@@ -2045,11 +1889,6 @@ async function sendMessage({ chatId, accountId, type = 'text', content, replyTo,
   const [chat, role] = await participantChat(chatId, accountId);
   if (!chat.acceptsMessages()) {
     throw ApiError.badRequest(`This chat is ${chat.status}.`);
-  }
-  /** A package whose time is up is frozen until the seeker extends, switches to per-minute, or ends. */
-  if (isPackagePhase(chat) && chat.packageState?.endsAt
-    && (chat.packageState.promptedAt || chat.packageState.endsAt.getTime() <= Date.now())) {
-    throw ApiError.badRequest('Package time is over — extend the consultation to keep chatting.', undefined, 'package_time_up');
   }
 
   try {
@@ -2091,8 +1930,7 @@ module.exports = {
   purchasePackage,
   tickOneSession,
   tickPackageSession,
-  extendPackage,
-  continuePerMinute,
+  switchPackageToPerMinute,
   isPackagePhase,
   tickAstrologerDisconnectGrace,
   pauseSessionsForAstrologer,
