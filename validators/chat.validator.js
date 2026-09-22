@@ -19,10 +19,33 @@ const precheck = [
   validate,
 ];
 
+/**
+ * POST /chats — only the optional package part is checked here; the rest of
+ * the body keeps its existing (service-side) handling. The price itself is
+ * always recomputed by the server — `quotedPrice` is only what the seeker
+ * was shown, compared against it.
+ */
+const request = [
+  body('billing.mode').optional().isIn(['per_minute', 'package']).withMessage('Unknown consultation type.'),
+  body('billing.packageMinutes')
+    .if(body('billing.mode').equals('package'))
+    .isInt({ min: 1 }).withMessage('Choose a package.'),
+  body('billing.quotedPrice').optional({ values: 'null' }).isFloat({ min: 0 }).withMessage('Invalid price.'),
+  validate,
+];
+
+/** POST /chats/:chatId/extend */
+const extend = [
+  param('chatId').isMongoId().withMessage('Unknown chat.'),
+  body('packageMinutes').isInt({ min: 1 }).withMessage('Choose a package.'),
+  body('quotedPrice').optional({ values: 'null' }).isFloat({ min: 0 }).withMessage('Invalid price.'),
+  validate,
+];
+
 /** GET /chats/:chatId */
 const chatIdParam = [
   param('chatId').isMongoId().withMessage('Unknown chat.'),
   validate,
 ];
 
-module.exports = { precheck, chatIdParam };
+module.exports = { precheck, request, extend, chatIdParam };

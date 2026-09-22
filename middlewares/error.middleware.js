@@ -65,6 +65,10 @@ function errorHandler(error, req, res, next) {
   if (isOperational && error.code) {
     body.code = error.code;
   }
+  /** Numbers a client acts on (a shortfall, a new price) — see ApiError#withDetails. */
+  if (isOperational && error.details) {
+    body.details = error.details;
+  }
   /** A wait the caller can actually count down, as a header and in the body. */
   if (isOperational && error.retryAfterSeconds !== undefined) {
     res.set('Retry-After', String(error.retryAfterSeconds));

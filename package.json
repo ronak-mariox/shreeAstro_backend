@@ -10,7 +10,7 @@
     "start": "node index.js",
     "dev": "node --watch index.js",
     "seed:admin": "node scripts/seed-admin.js",
-    "test": "node tests/seed-admin.test.js && node tests/flow.test.js && node tests/admin-created-astrologer.test.js && node tests/platform.test.js && node tests/admin-panel-contract.test.js && node tests/apps-contract.test.js && node tests/socket.test.js && node tests/kundli-cache.test.js && node tests/astrology-client.test.js && node tests/geo-cache.test.js && node tests/birth-profile.test.js && node tests/kundli-normalize.test.js && node tests/kundli-strength-remedies-normalize.test.js && node tests/kundli-read.test.js && node tests/integrations.test.js && node tests/transit-planets.test.js && node tests/zodiac.test.js && node tests/horoscope-derived.test.js && node tests/horoscope-cache.test.js && node tests/horoscope-normalize.test.js && node tests/horoscope-prefetch.test.js && node tests/zodiac-enrichment.test.js && node tests/chat-billing.test.js && node tests/assistant.test.js && node tests/assistant-tools.test.js && node tests/llm-provider.test.js",
+    "test": "node tests/seed-admin.test.js && node tests/flow.test.js && node tests/admin-created-astrologer.test.js && node tests/platform.test.js && node tests/admin-panel-contract.test.js && node tests/apps-contract.test.js && node tests/socket.test.js && node tests/kundli-cache.test.js && node tests/astrology-client.test.js && node tests/geo-cache.test.js && node tests/birth-profile.test.js && node tests/kundli-normalize.test.js && node tests/kundli-strength-remedies-normalize.test.js && node tests/kundli-read.test.js && node tests/integrations.test.js && node tests/transit-planets.test.js && node tests/zodiac.test.js && node tests/horoscope-derived.test.js && node tests/horoscope-cache.test.js && node tests/horoscope-normalize.test.js && node tests/horoscope-prefetch.test.js && node tests/zodiac-enrichment.test.js && node tests/chat-billing.test.js && node tests/chat-packages.test.js && node tests/assistant.test.js && node tests/assistant-tools.test.js && node tests/llm-provider.test.js",
     "test:flow": "node tests/flow.test.js",
     "test:socket": "node tests/socket.test.js",
     "test:admin-create": "node tests/admin-created-astrologer.test.js",
@@ -32,6 +32,7 @@
     "test:horoscope-prefetch": "node tests/horoscope-prefetch.test.js",
     "test:zodiac-enrichment": "node tests/zodiac-enrichment.test.js",
     "test:chat-billing": "node tests/chat-billing.test.js",
+    "test:chat-packages": "node tests/chat-packages.test.js",
     "test:assistant": "node tests/assistant.test.js",
     "test:assistant-tools": "node tests/assistant-tools.test.js",
     "test:llm-provider": "node tests/llm-provider.test.js"

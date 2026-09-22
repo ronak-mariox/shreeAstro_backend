@@ -29,8 +29,11 @@ router.post('/ai/messages', authorize('user'), chatController.askAi);
 router.post('/precheck', authorize('user'), chatValidator.precheck, chatController.precheck);
 
 /** The seeker's side. */
-router.post('/', authorize('user'), chatController.request);
+router.post('/', authorize('user'), chatValidator.request, chatController.request);
 router.post('/:chatId/cancel', authorize('user'), chatController.cancel);
+/** Package sessions: the seeker's answer to "Extend consultation?". */
+router.post('/:chatId/extend', authorize('user'), chatValidator.extend, chatController.extend);
+router.post('/:chatId/continue-per-minute', authorize('user'), chatValidator.chatIdParam, chatController.continuePerMinute);
 router.post('/:chatId/rate', authorize('user'), chatController.rate);
 
 /** The astrologer's side. */

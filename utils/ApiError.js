@@ -42,8 +42,18 @@ class ApiError extends Error {
     return new ApiError(404, message, undefined, code);
   }
 
-  static conflict(message, fields) {
-    return new ApiError(409, message, fields);
+  static conflict(message, fields, code) {
+    return new ApiError(409, message, fields, code);
+  }
+
+  /**
+   * Attaches machine-readable numbers a client needs to act on a refusal —
+   * e.g. the exact shortfall on an `insufficient_balance`, or the new price
+   * on a `price_changed` — sent back as `details` alongside `code`.
+   */
+  withDetails(details) {
+    this.details = details;
+    return this;
   }
 
   /** What a form gets back when its values do not pass validation. */
