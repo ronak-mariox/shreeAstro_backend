@@ -28,6 +28,26 @@ const settingsSchema = new Schema(
       default: 'weekly',
     },
 
+    /**
+     * The discount on each consultation package, in percent — edited on the
+     * panel's Settings → Platform page. Durations themselves live in
+     * config/packages.js; an offered duration with no entry here is simply
+     * undiscounted. Read by every package price the server quotes or charges
+     * (see config/packages.js's packagesWithDiscounts).
+     */
+    packageDiscounts: {
+      type: [
+        new Schema(
+          {
+            minutes: { type: Number, required: true, min: 1 },
+            discountPercent: { type: Number, required: true, min: 0, max: 90 },
+          },
+          { _id: false },
+        ),
+      ],
+      default: [],
+    },
+
     /** Parts of the product that can be switched off without a deploy. */
     features: {
       registrationsOpen: { type: Boolean, default: true },

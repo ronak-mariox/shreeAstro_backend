@@ -12,8 +12,12 @@
  * here changes every screen. user_app keeps an identical fallback copy in
  * src/data/consultPackages.ts for dummy mode only.
  *
- * `discountPercent` is the hook for discounted packages. It is honoured by
- * `packagePrice` already, but every entry is 0 today — no discount applies.
+ * Discounts: the `discountPercent` here is only the default (0). The live
+ * discount for each duration is set by an admin in the panel (Settings →
+ * Platform → Consultation package discounts), stored on models/Settings.js's
+ * `packageDiscounts`, and merged in by `packagesWithDiscounts`. Every price
+ * the server quotes or charges goes through `packagePrice`, so the discounted
+ * price is the one both shown and charged.
  */
 
 const CONSULTATION_PACKAGES = Object.freeze([
@@ -23,10 +27,72 @@ const CONSULTATION_PACKAGES = Object.freeze([
   Object.freeze({ minutes: 20, discountPercent: 0 }),
 ]);
 
-/** The package offered for exactly this many minutes, or null when none is. */
-function findPackage(minutes) {
+/** The most an admin may take off a package, in percent — anything above is refused, never silently clamped. */
+const MAX_PACKAGE_DISCOUNT_PERCENT = 90;
+
+/**
+ * Every offered package with the admin's discount applied (Settings'
+ * `packageDiscounts`, `[{ minutes, discountPercent }]`). A duration with no
+ * admin entry — or an entry for a duration no longer offered — falls back
+ * to the default here, so a stale setting can never add or remove a package.
+ */
+function packagesWithDiscounts(discounts = []) {
+  return CONSULTATION_PACKAGES.map(pkg => {
+    const override = (discounts || []).find(entry => Number(entry?.minutes) === pkg.minutes);
+    const percent = Number(override?.discountPercent);
+    return {
+      minutes: pkg.minutes,
+      discountPercent: Number.isFinite(percent) && percent >= 0 && percent <= MAX_PACKAGE_DISCOUNT_PERCENT
+        ? percent
+        : pkg.discountPercent,
+    };
+  });
+}
+
+/** The package offered for exactly this many minutes (with its admin discount), or null when none is. */
+function findPackage(minutes, discounts) {
   const wanted = Number(minutes);
-  return CONSULTATION_PACKAGES.find(entry => entry.minutes === wanted) || null;
+  return packagesWithDiscounts(discounts).find(entry => entry.minutes === wanted) || null;
+}
+
+/**
+ * Validates an admin's discount edit and merges it over `current` — used by
+ * services/settings.service.js. Returns one entry per offered package.
+ * Throws an Error with `field` set on anything invalid; the caller turns it
+ * into a 400.
+ */
+function mergePackageDiscounts(changes, current = []) {
+  if (!Array.isArray(changes)) {
+    const error = new Error('Package discounts must be a list.');
+    error.field = 'packageDiscounts';
+    throw error;
+  }
+  const merged = new Map(packagesWithDiscounts(current).map(pkg => [pkg.minutes, pkg.discountPercent]));
+  for (const entry of changes) {
+    const minutes = Number(entry?.minutes);
+    const percent = Number(entry?.discountPercent);
+    if (!merged.has(minutes)) {
+      const error = new Error(`There is no ${entry?.minutes}-minute package.`);
+      error.field = 'packageDiscounts';
+      throw error;
+    }
+    if (!Number.isInteger(percent) || percent < 0 || percent > MAX_PACKAGE_DISCOUNT_PERCENT) {
+      const error = new Error(`The ${minutes}-minute discount must be a whole number from 0 to ${MAX_PACKAGE_DISCOUNT_PERCENT}%.`);
+      error.field = 'packageDiscounts';
+      throw error;
+    }
+    merged.set(minutes, percent);
+  }
+  return [...merged.entries()].map(([minutes, discountPercent]) => ({ minutes, discountPercent }));
+}
+
+/** minutes × rate — the package's price before any discount (the struck-through figure in the app). */
+function originalPackagePrice(ratePerMinute, pkg) {
+  const rate = Number(ratePerMinute);
+  if (!pkg || !Number.isFinite(rate) || rate < 0) {
+    return null;
+  }
+  return Math.round(rate * pkg.minutes);
 }
 
 /**
@@ -44,11 +110,20 @@ function packagePrice(ratePerMinute, pkg) {
   return Math.max(0, Math.round(gross - discount));
 }
 
-/** Every package priced at `ratePerMinute`, optionally flagged against a wallet balance. */
-function packageQuotes(ratePerMinute, balance) {
-  return CONSULTATION_PACKAGES.map(pkg => {
+/**
+ * Every package priced at `ratePerMinute` with the admin's `discounts`
+ * applied — `originalPrice` is before the discount, `price` is what is
+ * charged — optionally flagged against a wallet balance.
+ */
+function packageQuotes(ratePerMinute, balance, discounts) {
+  return packagesWithDiscounts(discounts).map(pkg => {
     const price = packagePrice(ratePerMinute, pkg);
-    const quote = { minutes: pkg.minutes, discountPercent: pkg.discountPercent, price };
+    const quote = {
+      minutes: pkg.minutes,
+      discountPercent: pkg.discountPercent,
+      originalPrice: originalPackagePrice(ratePerMinute, pkg),
+      price,
+    };
     if (balance !== undefined) {
       quote.affordable = balance >= price;
       quote.shortfallAmount = Math.max(0, price - balance);
@@ -94,7 +169,11 @@ function unusedPackageRefund({ unusedSeconds, ratePerMinute, endedBy, reason }) 
 
 module.exports = {
   CONSULTATION_PACKAGES,
+  MAX_PACKAGE_DISCOUNT_PERCENT,
+  packagesWithDiscounts,
+  mergePackageDiscounts,
   findPackage,
+  originalPackagePrice,
   packagePrice,
   packageQuotes,
   unusedPackageSeconds,

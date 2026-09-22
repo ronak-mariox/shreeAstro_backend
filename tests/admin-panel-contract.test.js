@@ -330,6 +330,16 @@ const DELETE = (p) => call('DELETE', p);
   const saved = await PATCH('/admin/settings', {
     commissionPercent: 30, minRecharge: 50, features: { aiAssistant: false },
   });
+  hasFields('the package discount table', settings.body, ['consultationPackages', 'maxPackageDiscountPercent']);
+  check('one row per offered package, undiscounted by default',
+    settings.body.consultationPackages.map((p) => `${p.minutes}:${p.discountPercent}`).join(',') === '3:0,5:0,10:0,20:0',
+    settings.body.consultationPackages);
+  const discounted = await PATCH('/admin/settings', { packageDiscounts: [{ minutes: 10, discountPercent: 15 }] });
+  check('an admin can set a package discount',
+    discounted.status === 200 && discounted.body.consultationPackages.find((p) => p.minutes === 10).discountPercent === 15,
+    discounted.body);
+  const tooMuch = await PATCH('/admin/settings', { packageDiscounts: [{ minutes: 10, discountPercent: 95 }] });
+  check('a discount over the maximum is refused', tooMuch.status === 400, tooMuch.body);
   check('saving keeps the untouched switches',
     saved.body.settings.features.aiAssistant === false &&
     saved.body.settings.features.registrationsOpen === true,
