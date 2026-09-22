@@ -47,10 +47,8 @@ const CHAT_EVENTS = {
   /** Server -> client only, from the astrologer's own socket connecting/disconnecting while a session is active (services/chat.service.js's pauseSessionsForAstrologer/resumeSessionsForAstrologer). */
   ASTROLOGER_LEFT: 'chat:astrologer_left',
   ASTROLOGER_JOINED: 'chat:astrologer_joined',
-  /** Server -> client only, package sessions (config/packages.js): ~30s left, time up (the extend prompt), extended, switched to per-minute. */
+  /** Server -> client only, package sessions (config/packages.js): ~30s left, then time up and carrying on per-minute. */
   PACKAGE_WARNING: 'chat:package_warning',
-  PACKAGE_ENDED: 'chat:package_ended',
-  PACKAGE_EXTENDED: 'chat:package_extended',
   PER_MINUTE_STARTED: 'chat:per_minute_started',
 };
 
@@ -132,9 +130,9 @@ const chatSessionSchema = new Schema(
     billing: {
       /**
        * How the session was booked — never changes afterwards, so it stays
-       * the record of what the seeker chose. A 'package' session that later
-       * switches to per-minute keeps 'package' here; `packageState.perMinuteStartedAt`
-       * is what marks the switch. The rate below is frozen at request time
+       * the record of what the seeker chose. A 'package' session carries on
+       * per-minute once its package runs out and keeps 'package' here;
+       * `packageState.perMinuteStartedAt` is what marks the switch. The rate below is frozen at request time
        * and never re-read from the astrologer's live rate again — a rate
        * change mid-session must never affect a chat already in flight.
        */
@@ -197,20 +195,7 @@ const chatSessionSchema = new Schema(
       endsAt: { type: Date },
       /** Set once the ~30s "running out" warning has gone out for the current package. */
       warnedAt: { type: Date },
-      /**
-       * Set while the "Extend consultation?" prompt is open. The session is
-       * frozen meanwhile (no messages, nothing charged); unanswered for
-       * `packageExtensionResponseSeconds` it ends ('package_no_response').
-       */
-      promptedAt: { type: Date },
-      /**
-       * Set by the sweep the moment it claims an unanswered prompt for
-       * ending — extend / continue-per-minute both refuse once this is set,
-       * so an answer racing the timeout can never charge a session that is
-       * being closed.
-       */
-      closingAt: { type: Date },
-      /** Set when the seeker chose "Continue per-minute" — the normal per-minute meter runs from here. */
+      /** Set when the package ran out (its `endsAt`) — the normal per-minute meter runs from here. */
       perMinuteStartedAt: { type: Date },
       /** Package seconds paid for but not used when the session ended — the input to the refund policy. */
       unusedSeconds: { type: Number, min: 0 },

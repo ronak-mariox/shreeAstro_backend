@@ -214,8 +214,6 @@ const env = {
     partialMinuteRounding: process.env.PARTIAL_MINUTE_ROUNDING || 'up',
     /** Package sessions (config/packages.js): how many seconds before a package runs out the seeker is warned. */
     packageWarningSeconds: Number(process.env.PACKAGE_WARNING_SECONDS || 30),
-    /** Package sessions: how long the "Extend consultation?" prompt waits for an answer before the session is ended. */
-    packageExtensionResponseSeconds: Number(process.env.PACKAGE_EXTENSION_RESPONSE_SECONDS || 60),
   },
 
   /**

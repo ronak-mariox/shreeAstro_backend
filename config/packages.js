@@ -4,8 +4,9 @@
  * A package is bought whole, upfront (on accept, in the same transaction that
  * starts the session — see services/chat.service.js's purchasePackage), and
  * the per-minute meter never runs while one is in force. When its time is up
- * the seeker is asked to extend with another package, switch to per-minute,
- * or end.
+ * the session carries on per-minute by itself, billed exactly like a
+ * per-minute session (including the existing low-balance banner / recharge
+ * flow when the wallet runs short).
  *
  * The list below is the ONE place the offered durations live; both apps get
  * it priced from `packageQuotes` (POST /chats/precheck), so changing an entry
@@ -133,11 +134,11 @@ function packageQuotes(ratePerMinute, balance, discounts) {
 }
 
 /**
- * Seconds of a package still unused at `now` — 0 once its time has run out,
- * the extension prompt is open, or the session has moved on to per-minute.
+ * Seconds of a package still unused at `now` — 0 once its time has run out
+ * or the session has moved on to per-minute.
  */
 function unusedPackageSeconds(packageState, now) {
-  if (!packageState?.endsAt || packageState.promptedAt || packageState.perMinuteStartedAt) {
+  if (!packageState?.endsAt || packageState.perMinuteStartedAt) {
     return 0;
   }
   return Math.max(0, Math.floor((new Date(packageState.endsAt).getTime() - now.getTime()) / 1000));

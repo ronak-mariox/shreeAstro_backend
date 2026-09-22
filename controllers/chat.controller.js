@@ -50,26 +50,6 @@ const request = asyncHandler(async (req, res) => {
   });
 });
 
-/** POST /api/v1/chats/:chatId/extend — the seeker buys another package when the current one runs out. */
-const extend = asyncHandler(async (req, res) => {
-  const result = await chatService.extendPackage({
-    chatId: req.params.chatId,
-    userId: req.account.accountId,
-    packageMinutes: req.body.packageMinutes,
-    quotedPrice: req.body.quotedPrice,
-  });
-  return res.json(result);
-});
-
-/** POST /api/v1/chats/:chatId/continue-per-minute — the seeker switches a finished package over to per-minute billing. */
-const continuePerMinute = asyncHandler(async (req, res) => {
-  const result = await chatService.continuePerMinute({
-    chatId: req.params.chatId,
-    userId: req.account.accountId,
-  });
-  return res.json(result);
-});
-
 /** POST /api/v1/chats/:chatId/accept — the astrologer takes it. */
 const accept = asyncHandler(async (req, res) => {
   const chat = await chatService.acceptChat({
@@ -221,4 +201,4 @@ const askAi = asyncHandler(async (req, res) => {
   return res.status(201).json(result);
 });
 
-module.exports = { aiThread, askAi, precheck, state, request, extend, continuePerMinute, accept, reject, cancel, end, rate, list, messages, send };
+module.exports = { aiThread, askAi, precheck, state, request, accept, reject, cancel, end, rate, list, messages, send };

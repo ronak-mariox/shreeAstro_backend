@@ -1,8 +1,9 @@
 /**
  * Package-based consultations (config/packages.js, services/chat.service.js):
  * pricing, the upfront package charge on accept, the package sweep (warning,
- * extend prompt, no-response auto-end), extending, switching to per-minute,
- * ending, and the money invariants around each. Real Mongo transactions;
+ * then carrying on per-minute by itself once the package runs out — with the
+ * ordinary per-minute low-balance pause / top-up resume), ending, and the
+ * money invariants around each. Real Mongo transactions;
  * time is controlled by passing an explicit `now` into the sweep, and by
  * backdating fields directly, the same way chat-billing.test.js does.
  *
@@ -21,6 +22,7 @@ const ChatBillingTick = require('../models/ChatBillingTick');
 const ChatPackagePurchase = require('../models/ChatPackagePurchase');
 const WalletTransaction = require('../models/WalletTransaction');
 const chatService = require('../services/chat.service');
+const walletService = require('../services/wallet.service');
 const env = require('../config/env');
 const packages = require('../config/packages');
 
@@ -119,7 +121,6 @@ async function sweepAt(chatId, now) {
   const t0 = new Date('2026-01-01T10:00:00Z');
   check('90s left on a running package', packages.unusedPackageSeconds({ endsAt: seconds(t0, 90) }, t0) === 90);
   check('0 once the package has run out', packages.unusedPackageSeconds({ endsAt: seconds(t0, -5) }, t0) === 0);
-  check('0 while the extend prompt is open', packages.unusedPackageSeconds({ endsAt: seconds(t0, 90), promptedAt: t0 }, t0) === 0);
   check('0 once switched to per-minute', packages.unusedPackageSeconds({ endsAt: seconds(t0, 90), perMinuteStartedAt: t0 }, t0) === 0);
   check('refund hook: seeker ended early -> ₹0', packages.unusedPackageRefund({ unusedSeconds: 120, ratePerMinute: 20, endedBy: 'user' }) === 0);
   check('refund hook: astrologer ended early -> ₹0 (placeholder until policy decided)', packages.unusedPackageRefund({ unusedSeconds: 120, ratePerMinute: 20, endedBy: 'astrologer' }) === 0);
@@ -181,7 +182,7 @@ async function sweepAt(chatId, now) {
   }
 
   /* ------------------------------------------------ scenario 3 */
-  section('scenario 3 — 3-min package, sufficient balance');
+  section('scenario 3 — 3-min package, sufficient balance → carries on per-minute at the end');
   let s3;
   {
     const user = await makeUser(300);
@@ -198,11 +199,10 @@ async function sweepAt(chatId, now) {
     check('charged the package price exactly once (₹60)', await balanceOf(user._id) === 240);
     const debits = await WalletTransaction.find({ chatSession: chat._id, ownerRole: 'user', direction: 'debit' });
     check('one debit transaction', debits.length === 1 && debits[0].amount === 60);
-    check('one package ledger row', await ChatPackagePurchase.countDocuments({ chatSession: chat._id }) === 1);
-    check('no per-minute tick rows', await ChatBillingTick.countDocuments({ chatSession: chat._id }) === 0);
+    check('one package ledger row, no per-minute rows',
+      await ChatPackagePurchase.countDocuments({ chatSession: chat._id }) === 1 && await ChatBillingTick.countDocuments({ chatSession: chat._id }) === 0);
     check('the record stores type, duration and amount',
-      chat.billing.packages.length === 1 && chat.billing.packages[0].minutes === 3 && chat.billing.packages[0].kind === 'initial'
-      && chat.billing.packageAmountCharged === 60 && chat.billing.amountCharged === 60);
+      chat.billing.packages.length === 1 && chat.billing.packages[0].minutes === 3 && chat.billing.packageAmountCharged === 60);
     const runMs = chat.packageState.endsAt.getTime() - accepted.startedAt.getTime();
     check('the package runs 3 minutes from the start', runMs === 3 * 60 * 1000);
     check('astrologer NOT credited yet (settled at the end)', await earningsOf(astro._id) === 0);
@@ -210,85 +210,57 @@ async function sweepAt(chatId, now) {
     const endsAt = chat.packageState.endsAt;
     const r1 = await sweepAt(chat._id, seconds(chat.startedAt, 61));
     const r2 = await sweepAt(chat._id, seconds(chat.startedAt, 125));
-    check('sweeps during the package charge nothing', r1.action === 'package_running' && r2.action === 'package_running' && await balanceOf(user._id) === 240);
+    check('sweeps during the package charge nothing per minute', r1.action === 'package_running' && r2.action === 'package_running' && await balanceOf(user._id) === 240);
 
     const w = await sweepAt(chat._id, seconds(endsAt, -25));
-    check('~30s before the end: warning', w.action === 'package_warned' && eventsFor(chat._id, CHAT_EVENTS.PACKAGE_WARNING).length === 1);
+    const warning = eventsFor(chat._id, CHAT_EVENTS.PACKAGE_WARNING)[0];
+    check('~30s before the end: a "then ₹20/min" warning (wallet is fine, so no low-balance banner)',
+      w.action === 'package_warned' && warning?.payload.ratePerMinute === 20 && eventsFor(chat._id, CHAT_EVENTS.LOW_BALANCE).length === 0);
     await sweepAt(chat._id, seconds(endsAt, -15));
     check('the warning fires only once', eventsFor(chat._id, CHAT_EVENTS.PACKAGE_WARNING).length === 1);
 
-    await chatService.sendMessage({ chatId: chat._id, accountId: user._id, type: 'text', content: { text: 'still in time' } });
-    const p = await sweepAt(chat._id, seconds(endsAt, 1));
-    const prompt = eventsFor(chat._id, CHAT_EVENTS.PACKAGE_ENDED)[0];
-    check('at the end: the extend prompt appears', p.action === 'extension_prompted' && Boolean(prompt));
-    check('the prompt carries priced options, per-minute affordability and the 60s window',
-      prompt?.payload.packages.map(q => q.price).join(',') === '60,100,200,400' && prompt.payload.perMinuteAffordable === true
-      && prompt.payload.respondWithinSeconds === env.consultation.packageExtensionResponseSeconds);
-    const frozen = await expectError(() => chatService.sendMessage({ chatId: chat._id, accountId: user._id, type: 'text', content: { text: 'hello?' } }));
-    check('the chat is frozen while the prompt is open', frozen?.code === 'package_time_up');
-    check('still nothing extra charged', await balanceOf(user._id) === 240);
+    const sw = await sweepAt(chat._id, seconds(endsAt, 1));
+    const switched = await ChatSession.findById(chat._id);
+    check('at the end it switches to per-minute by itself — no popup, no prompt',
+      sw.switchedToPerMinute === true && switched.packageState.perMinuteStartedAt.getTime() === endsAt.getTime());
+    check('the first per-minute minute is charged right away (₹20)', sw.action === 'billed' && await balanceOf(user._id) === 220 && switched.minutesBilled === 1);
+    check('a live per_minute_started event went out', eventsFor(chat._id, CHAT_EVENTS.PER_MINUTE_STARTED).length === 1);
+    check('the session keeps running (still active, messages allowed)',
+      switched.status === 'active' && Boolean(await chatService.sendMessage({ chatId: chat._id, accountId: user._id, type: 'text', content: { text: 'still here' } })));
+    const again = await sweepAt(chat._id, seconds(endsAt, 5));
+    check('switching happens only once', !again.switchedToPerMinute && eventsFor(chat._id, CHAT_EVENTS.PER_MINUTE_STARTED).length === 1);
+    const tick = await sweepAt(chat._id, seconds(switched.lastBilledAt, 61));
+    check('from then on the ordinary per-minute sweep bills each minute', tick.action === 'billed' && await balanceOf(user._id) === 200);
     const view = (await chatService.getSessionState({ chatId: chat._id, accountId: user._id })).package;
-    check('session state exposes the prompt (for a reconnecting app)', view.phase === 'awaiting_extension' && view.packages.length === 4 && Boolean(view.respondBy));
-    const join = await chatService.joinChat({ chatId: chat._id, accountId: user._id });
-    check('the socket rejoin exposes it too', join.package?.phase === 'awaiting_extension' && Boolean(join.serverTime));
-    markScenario(3, '3-min package, sufficient balance → deducted once, runs 3 min, extend popup appears',
-      (await balanceOf(user._id)) === 240 && runMs === 180000 && Boolean(prompt));
+    check('session state reports the per-minute phase', view.phase === 'per_minute' && Boolean(view.perMinuteStartedAt));
+    markScenario(3, '3-min package, sufficient balance → deducted once, runs 3 min, then continues per-minute (no popup)',
+      runMs === 180000 && sw.switchedToPerMinute === true && (await balanceOf(user._id)) === 200);
     s3 = { user, astro, chat };
   }
 
-  /* ------------------------------------------------ scenario 5 */
-  section('scenario 5 — extend with another package');
-  {
-    const { user, astro, chat } = s3;
-    const before = await balanceOf(user._id);
-    const insufficientExt = await expectError(() => chatService.extendPackage({ chatId: chat._id, userId: user._id, packageMinutes: 20, quotedPrice: 400 }));
-    check('an unaffordable extension is refused with the exact shortfall', insufficientExt?.code === 'insufficient_balance' && insufficientExt.details?.shortfallAmount === 400 - before);
-    const wrongPrice = await expectError(() => chatService.extendPackage({ chatId: chat._id, userId: user._id, packageMinutes: 5, quotedPrice: 1 }));
-    check('a tampered/stale client price is refused (server price wins)', wrongPrice?.code === 'price_changed' && wrongPrice.details?.price === 100);
-    const notUser = await expectError(() => chatService.extendPackage({ chatId: chat._id, userId: astro._id, packageMinutes: 5 }));
-    check('only the seeker can extend', notUser?.status === 403);
-
-    /** A double-tap: two extend calls at once. */
-    const results = await Promise.allSettled([
-      chatService.extendPackage({ chatId: chat._id, userId: user._id, packageMinutes: 5, quotedPrice: 100 }),
-      chatService.extendPackage({ chatId: chat._id, userId: user._id, packageMinutes: 5, quotedPrice: 100 }),
-    ]);
-    const ok = results.filter(r => r.status === 'fulfilled');
-    check('double-tap: exactly one extension succeeds', ok.length === 1, results.map(r => r.status === 'rejected' ? r.reason.message : 'ok'));
-    check('second deduction happened exactly once (₹100)', await balanceOf(user._id) === before - 100);
-    const after = await ChatSession.findById(chat._id);
-    check('the record now holds both packages', after.billing.packages.map(p => `${p.kind}:${p.minutes}:${p.amount}`).join('|') === 'initial:3:60|extension:5:100');
-    check('the prompt is cleared and the timer continues for 5 minutes', !after.packageState.promptedAt
-      && Math.abs(after.packageState.endsAt.getTime() - (ok[0].value.endsAt.getTime())) === 0
-      && Math.abs(after.packageState.endsAt.getTime() - Date.now() - 5 * 60000) < 5000);
-    check('chatting works again', Boolean(await chatService.sendMessage({ chatId: chat._id, accountId: user._id, type: 'text', content: { text: 'thanks' } })));
-    check('a live package_extended event went out', eventsFor(chat._id, CHAT_EVENTS.PACKAGE_EXTENDED).length === 1);
-    const notAwaiting = await expectError(() => chatService.extendPackage({ chatId: chat._id, userId: user._id, packageMinutes: 3 }));
-    check('extending while the package is still running is refused', notAwaiting?.code === 'not_awaiting_extension');
-    const r = await sweepAt(chat._id, seconds(after.packageState.endsAt, -120));
-    check('the new package runs without per-minute charges', r.action === 'package_running' && await ChatBillingTick.countDocuments({ chatSession: chat._id }) === 0);
-    markScenario(5, 'Extend with another package → second deduction, timer continues',
-      ok.length === 1 && (await balanceOf(user._id)) === before - 100 && !after.packageState.promptedAt);
-  }
-
   /* ------------------------------------------------ scenario 7 (on the s3 session) */
-  section('scenario 7 — end at the popup');
+  section('scenario 7 — ending after the switch');
   {
     const { user, astro, chat } = s3;
-    const fresh = await ChatSession.findById(chat._id);
-    await sweepAt(chat._id, seconds(fresh.packageState.endsAt, 1));
-    check('prompt open again after the extension ran out', Boolean((await ChatSession.findById(chat._id)).packageState.promptedAt));
     const before = await balanceOf(user._id);
     const ended = await chatService.endChat({ chatId: chat._id, accountId: user._id, endedBy: 'user', reason: 'user_ended' });
     check('session ended', ended.status === 'ended');
-    check('no extra charge at the end', await balanceOf(user._id) === before && ended.billing.amountCharged === 160);
-    check('no per-minute minutes billed', ended.minutesBilled === 0 && await ChatBillingTick.countDocuments({ chatSession: chat._id }) === 0);
-    check('astrologer credited their share of the packages once, at the end (75% of ₹160 = ₹120)', await earningsOf(astro._id) === 120 && ended.billing.astrologerEarning === 120);
-    const again = await expectError(() => chatService.endChat({ chatId: chat._id, accountId: user._id, endedBy: 'user' }));
-    check('ending twice is refused, and pays nothing twice', again?.status === 400 && await earningsOf(astro._id) === 120);
-    const astroStats = await Astrologer.findById(astro._id);
-    check('stats count the 8 package minutes', astroStats.metrics.chatMinutes === 8);
-    markScenario(7, 'End at popup → session ends, no extra charge', (await balanceOf(user._id)) === before && ended.status === 'ended');
+    check('no extra charge beyond minutes already billed (package ₹60 + 2 per-minute ₹40)', await balanceOf(user._id) === before && ended.billing.amountCharged === 100);
+    check('astrologer: per-minute ₹30 as it ticked + package ₹45 at the end = ₹75', await earningsOf(astro._id) === 75 && ended.billing.astrologerEarning === 75);
+    const twice = await expectError(() => chatService.endChat({ chatId: chat._id, accountId: user._id, endedBy: 'user' }));
+    check('ending twice is refused, and pays nothing twice', twice?.status === 400 && await earningsOf(astro._id) === 75);
+    markScenario(7, 'End after the package → no extra charge, astrologer settled once', ended.status === 'ended' && (await earningsOf(astro._id)) === 75);
+  }
+
+  section('scenario 7b — ending during the package');
+  {
+    const user = await makeUser(500);
+    const astro = await makeAstrologer({ chatRate: 20 });
+    const chat = await startPackage({ user, astro, minutes: 5, quotedPrice: 100 });
+    const ended = await chatService.endChat({ chatId: chat._id, accountId: user._id, endedBy: 'user' });
+    check('no per-minute charge, no refund (seeker ended early)', await balanceOf(user._id) === 400 && ended.billing.amountCharged === 100 && ended.billing.packageRefundAmount === 0);
+    check('stats count the 5 package minutes', (await Astrologer.findById(astro._id)).metrics.chatMinutes === 5);
+    markScenario(7, 'End at any point → no extra charge', (await balanceOf(user._id)) === 400);
   }
 
   /* ------------------------------------------------ scenario 4 */
@@ -310,6 +282,59 @@ async function sweepAt(chatId, now) {
     markScenario(4, 'Package with insufficient balance → blocked, recharge prompt data returned', error?.code === 'insufficient_balance' && error.details?.shortfallAmount === 10);
   }
 
+  /* ------------------------------------------------ scenario 5 */
+  section('scenario 5 — package ending with a low wallet uses the existing low-balance / recharge flow');
+  {
+    const user = await makeUser(70);
+    const astro = await makeAstrologer({ chatRate: 20 });
+    const chat = await startPackage({ user, astro, minutes: 3, quotedPrice: 60 });
+    const endsAt = chat.packageState.endsAt;
+    check('₹10 left after the package', await balanceOf(user._id) === 10);
+
+    const w = await sweepAt(chat._id, seconds(endsAt, -25));
+    const low = eventsFor(chat._id, CHAT_EVENTS.LOW_BALANCE)[0];
+    check('~30s before the end: the ordinary low-balance warning (the existing banner), not a package notice',
+      w.action === 'package_warned_low_balance' && low?.payload.exhausted === false && low.payload.requiredAmount === 20
+      && low.payload.secondsUntilCut === 25 && eventsFor(chat._id, CHAT_EVENTS.PACKAGE_WARNING).length === 0);
+
+    const sw = await sweepAt(chat._id, seconds(endsAt, 1));
+    const paused = await ChatSession.findById(chat._id);
+    const pausedEvent = eventsFor(chat._id, CHAT_EVENTS.LOW_BALANCE).find(e => e.payload.paused === true);
+    check('at the end it switches to per-minute and, unable to pay, pauses exactly like a per-minute chat',
+      sw.switchedToPerMinute === true && sw.action === 'balance_paused' && Boolean(paused.balanceExhaustedAt) && Boolean(pausedEvent));
+    check('nothing charged while paused', await balanceOf(user._id) === 10 && paused.minutesBilled === 0);
+
+    await walletService.post({ ownerRole: 'user', ownerId: user._id, direction: 'credit', type: 'topup', amount: 100, title: 'Top-up' });
+    const resumeAt = seconds(endsAt, 120);
+    const resumed = await chatService.resumePausedSessionsForUser(user._id, resumeAt);
+    check('a top-up resumes it (existing resume path)', resumed.includes(String(chat._id))
+      && eventsFor(chat._id, CHAT_EVENTS.LOW_BALANCE).some(e => e.payload.paused === false));
+    const tick = await sweepAt(chat._id, seconds(resumeAt, 1));
+    check('and the first per-minute minute is charged on the next sweep (₹110 → ₹90)', tick.action === 'billed' && await balanceOf(user._id) === 90);
+    await chatService.endChat({ chatId: chat._id, accountId: user._id, endedBy: 'user' });
+    markScenario(5, 'Package ending with low balance → existing low-balance banner / recharge, resume on top-up',
+      w.action === 'package_warned_low_balance' && sw.action === 'balance_paused' && tick.action === 'billed');
+  }
+
+  /* ------------------------------------------------ scenario 6 */
+  section('scenario 6 — per-minute after the package trues up only from the switch');
+  {
+    const user = await makeUser(500);
+    const astro = await makeAstrologer({ chatRate: 20, commissionPercent: 25 });
+    const chat = await startPackage({ user, astro, minutes: 3, quotedPrice: 60 });
+    const early = await sweepAt(chat._id, seconds(chat.startedAt, 90));
+    check('no per-minute billing while the package is running', early.action === 'package_running' && await ChatBillingTick.countDocuments({ chatSession: chat._id }) === 0);
+    await sweepAt(chat._id, seconds(chat.packageState.endsAt, 1));
+    check('first per-minute minute on switching', await balanceOf(user._id) === 420);
+    /** 150s of per-minute time -> 3 minutes owed from the switch point, never from the package start. */
+    await ChatSession.updateOne({ _id: chat._id }, { $set: { 'packageState.perMinuteStartedAt': new Date(Date.now() - 150 * 1000) } });
+    const ended = await chatService.endChat({ chatId: chat._id, accountId: user._id, endedBy: 'user' });
+    check('endChat trues up only the per-minute tail (3 min = ₹60) on top of the package (₹60)', ended.billing.amountCharged === 120 && await balanceOf(user._id) === 380);
+    check('astrologer: per-minute ₹45 + package ₹45 = ₹90', await earningsOf(astro._id) === 90);
+    check('stats count 3 package + 3 per-minute minutes', (await Astrologer.findById(astro._id)).metrics.chatMinutes === 6);
+    markScenario(6, 'Per-minute starts only after the package ends, billed from that point', early.action === 'package_running' && ended.billing.amountCharged === 120);
+  }
+
   /* ------------------------------------------------ rate change */
   section('edge — rate changes between opening the form and submitting');
   {
@@ -327,91 +352,8 @@ async function sweepAt(chatId, now) {
     check('re-confirmed at the new price, charged ₹125', await balanceOf(user._id) === 875 && chat.billing.ratePerMinute === 25);
     await Astrologer.updateOne({ _id: astro._id, 'services.type': 'chat' }, { $set: { 'services.$.ratePerMinute': 40 } });
     await sweepAt(chat._id, seconds(chat.packageState.endsAt, 1));
-    const ext = await chatService.extendPackage({ chatId: chat._id, userId: user._id, packageMinutes: 3 });
-    check('an extension uses the session\'s frozen rate, not a mid-session change (3 × ₹25 = ₹75)', ext.amount === 75);
+    check('per-minute after the package uses the session\'s frozen rate (₹25), not a mid-session change', await balanceOf(user._id) === 850);
     await chatService.endChat({ chatId: chat._id, accountId: user._id, endedBy: 'user' });
-  }
-
-  /* ------------------------------------------------ scenario 6 */
-  section('scenario 6 — extend → switch to per-minute');
-  {
-    const user = await makeUser(500);
-    const astro = await makeAstrologer({ chatRate: 20, commissionPercent: 25 });
-    const chat = await startPackage({ user, astro, minutes: 3, quotedPrice: 60 });
-    const earlyCheck = await sweepAt(chat._id, seconds(chat.startedAt, 90));
-    check('no per-minute billing while the package is running', earlyCheck.action === 'package_running' && await ChatBillingTick.countDocuments({ chatSession: chat._id }) === 0);
-    const early = await expectError(() => chatService.continuePerMinute({ chatId: chat._id, userId: user._id }));
-    check('cannot switch before the package ends', early?.code === 'not_awaiting_extension');
-    await sweepAt(chat._id, seconds(chat.packageState.endsAt, 1));
-    const before = await balanceOf(user._id);
-    check('no per-minute charge between package end and the choice', before === 440);
-    const cont = await chatService.continuePerMinute({ chatId: chat._id, userId: user._id });
-    check('switching charges the first per-minute minute upfront (₹20)', await balanceOf(user._id) === before - 20 && cont.balanceRemaining === before - 20);
-    const switched = await ChatSession.findById(chat._id);
-    check('the record keeps mode=package and marks the switch', switched.billing.mode === 'package' && Boolean(switched.packageState.perMinuteStartedAt) && !switched.packageState.promptedAt);
-    check('per-minute ledger starts at minute 1', switched.minutesBilled === 1 && await ChatBillingTick.countDocuments({ chatSession: chat._id }) === 1);
-    check('a live per_minute_started event went out', eventsFor(chat._id, CHAT_EVENTS.PER_MINUTE_STARTED).length === 1);
-    const tick = await sweepAt(chat._id, seconds(switched.lastBilledAt, 61));
-    check('the existing per-minute sweep now bills normally', tick.action === 'billed' && await balanceOf(user._id) === before - 40);
-    check('astrologer got per-minute earnings as they tick (75% of ₹40 = ₹30), package share still pending', await earningsOf(astro._id) === 30);
-    /** 150s of per-minute time -> 3 minutes owed from the switch point, never from the package start. */
-    await ChatSession.updateOne({ _id: chat._id }, { $set: { 'packageState.perMinuteStartedAt': new Date(Date.now() - 150 * 1000) } });
-    const ended = await chatService.endChat({ chatId: chat._id, accountId: user._id, endedBy: 'user' });
-    check('endChat trues up only the per-minute tail (3 min = ₹60) on top of the package (₹60)', ended.billing.amountCharged === 120 && await balanceOf(user._id) === 380);
-    check('astrologer: per-minute ₹45 + package ₹45 = ₹90', await earningsOf(astro._id) === 90);
-    markScenario(6, 'Extend → switch to per-minute → per-minute starts only after package ends',
-      earlyCheck.action === 'package_running' && before === 440 && ended.billing.amountCharged === 120);
-  }
-
-  section('edge — continue per-minute without enough balance');
-  {
-    const user = await makeUser(65);
-    const astro = await makeAstrologer({ chatRate: 20 });
-    const chat = await startPackage({ user, astro, minutes: 3, quotedPrice: 60 });
-    await sweepAt(chat._id, seconds(chat.packageState.endsAt, 1));
-    const error = await expectError(() => chatService.continuePerMinute({ chatId: chat._id, userId: user._id }));
-    check('refused with the shortfall (₹15)', error?.code === 'insufficient_balance' && error.details?.shortfallAmount === 15);
-    const after = await ChatSession.findById(chat._id);
-    check('the prompt stays open, nothing charged, not switched', Boolean(after.packageState.promptedAt) && !after.packageState.perMinuteStartedAt && await balanceOf(user._id) === 5);
-    await chatService.endChat({ chatId: chat._id, accountId: user._id, endedBy: 'user' });
-  }
-
-  /* ------------------------------------------------ scenario 8 */
-  section('scenario 8 — no response to the popup');
-  {
-    const user = await makeUser(500);
-    const astro = await makeAstrologer({ chatRate: 20 });
-    const chat = await startPackage({ user, astro, minutes: 3, quotedPrice: 60 });
-    const promptAt = seconds(chat.packageState.endsAt, 2);
-    await sweepAt(chat._id, promptAt);
-    const waiting = await sweepAt(chat._id, seconds(promptAt, 30));
-    check('still waiting 30s in', waiting.action === 'awaiting_extension');
-    const before = await balanceOf(user._id);
-    const ended = await sweepAt(chat._id, seconds(promptAt, env.consultation.packageExtensionResponseSeconds + 1));
-    const row = await ChatSession.findById(chat._id);
-    check('auto-ended after the response window', ended.action === 'ended_no_response' && row.status === 'ended');
-    check('ended by system, reason package_no_response', row.endedBy === 'system' && row.endReason === 'package_no_response');
-    check('no extra charge', await balanceOf(user._id) === before && row.billing.amountCharged === 60);
-    check('both sides were told it ended', eventsFor(chat._id, CHAT_EVENTS.ENDED).length === 1);
-    const late = await expectError(() => chatService.extendPackage({ chatId: chat._id, userId: user._id, packageMinutes: 3 }));
-    check('a late extend after auto-end is refused and charges nothing', late?.status === 400 && await balanceOf(user._id) === before);
-    markScenario(8, 'No response to popup → auto end', row.status === 'ended' && row.endReason === 'package_no_response' && (await balanceOf(user._id)) === before);
-  }
-
-  section('edge — an answer racing the timeout never charges a closing session');
-  {
-    const user = await makeUser(500);
-    const astro = await makeAstrologer({ chatRate: 20 });
-    const chat = await startPackage({ user, astro, minutes: 3, quotedPrice: 60 });
-    await sweepAt(chat._id, seconds(chat.packageState.endsAt, 1));
-    /** The sweep has claimed the prompt for closing (closingAt set) but not yet ended it. */
-    await ChatSession.updateOne({ _id: chat._id }, { $set: { 'packageState.closingAt': new Date() } });
-    const before = await balanceOf(user._id);
-    const ext = await expectError(() => chatService.extendPackage({ chatId: chat._id, userId: user._id, packageMinutes: 3 }));
-    const cont = await expectError(() => chatService.continuePerMinute({ chatId: chat._id, userId: user._id }));
-    check('extend and continue both refused', ext?.code === 'not_awaiting_extension' && cont?.code === 'not_awaiting_extension');
-    check('nothing charged', await balanceOf(user._id) === before);
-    await chatService.endChat({ chatId: chat._id, accountId: user._id, endedBy: 'system', reason: 'package_no_response' });
   }
 
   /* ------------------------------------------------ scenario 9 */
@@ -487,13 +429,12 @@ async function sweepAt(chatId, now) {
     const debit = await WalletTransaction.findOne({ chatSession: chat._id, direction: 'debit' });
     check('ledger title says Call', /^Call consultation — 5-min package/.test(debit.title));
     await sweepAt(chat._id, seconds(chat.packageState.endsAt, -20));
-    await sweepAt(chat._id, seconds(chat.packageState.endsAt, 1));
-    check('warning and prompt fire for a call too', eventsFor(chat._id, CHAT_EVENTS.PACKAGE_WARNING).length === 1 && eventsFor(chat._id, CHAT_EVENTS.PACKAGE_ENDED).length === 1);
-    const ext = await chatService.extendPackage({ chatId: chat._id, userId: user._id, packageMinutes: 3, quotedPrice: 90 });
-    check('extension at the call rate (₹90)', ext.amount === 90 && await balanceOf(user._id) === 760);
+    const sw = await sweepAt(chat._id, seconds(chat.packageState.endsAt, 1));
+    check('warning, then per-minute at the call rate (₹30)',
+      eventsFor(chat._id, CHAT_EVENTS.PACKAGE_WARNING).length === 1 && sw.switchedToPerMinute && await balanceOf(user._id) === 820);
     const ended = await chatService.endChat({ chatId: chat._id, accountId: user._id, endedBy: 'user' });
-    check('call metrics count the package minutes', (await Astrologer.findById(astro._id)).metrics.callMinutes === 8);
-    markScenario(10, 'Package flow on a call consultation (backend)', ended.billing.amountCharged === 240 && (await balanceOf(user._id)) === 760);
+    check('call metrics count package + per-minute minutes', (await Astrologer.findById(astro._id)).metrics.callMinutes === 6);
+    markScenario(10, 'Package flow on a call consultation (backend)', ended.billing.amountCharged === 180 && (await balanceOf(user._id)) === 820);
   }
 
   /* ------------------------------------------------ astrologer ends early / disconnects */
@@ -532,9 +473,9 @@ async function sweepAt(chatId, now) {
   section('edge — history rows carry the booking type');
   {
     const list = await chatService.listChats({ accountId: s3.user._id, role: 'user' });
-    check('billingMode and total package minutes on the row', list.items[0].billingMode === 'package' && list.items[0].packageMinutes === 8);
+    check('billingMode and total package minutes on the row', list.items[0].billingMode === 'package' && list.items[0].packageMinutes === 3);
     const systemLines = await Message.find({ chatId: s3.chat._id, senderRole: 'system' }).sort({ seq: 1 });
-    check('both sides see package notices in the transcript', systemLines.some(m => m.content.event === 'package_extended') && systemLines.some(m => m.content.event === 'package_ended'));
+    check('both sides see the "continues per-minute" notice in the transcript', systemLines.some(m => m.content.event === 'per_minute_started'));
   }
 
   /* ------------------------------------------------ HTTP contract */
@@ -572,18 +513,10 @@ async function sweepAt(chatId, now) {
     check('accept over HTTP charges the package', acc.status === 200 && await balanceOf(user._id) === 10);
     const st = await asUser('GET', `/chats/${ok.body.chatId}`);
     check('GET /chats/:id exposes billingMode, package view and serverTime', st.body.billingMode === 'package' && st.body.package?.phase === 'package' && Boolean(st.body.package.endsAt) && Boolean(st.body.serverTime));
-    const early = await asUser('POST', `/chats/${ok.body.chatId}/extend`, { packageMinutes: 3, quotedPrice: 60 });
-    check('POST /extend before the package ends -> 409 not_awaiting_extension', early.status === 409 && early.body.code === 'not_awaiting_extension');
-    const astroExt = await asAstro('POST', `/chats/${ok.body.chatId}/extend`, { packageMinutes: 3 });
-    check('POST /extend is seeker-only (403 for the astrologer)', astroExt.status === 403);
-    const noMin = await asUser('POST', `/chats/${ok.body.chatId}/extend`, {});
-    check('POST /extend without packageMinutes is refused by the validator', noMin.status >= 400 && noMin.status < 500 && noMin.status !== 409);
-    const chat = await ChatSession.findById(ok.body.chatId);
-    await sweepAt(chat._id, seconds(chat.packageState.endsAt, 1));
-    const cont = await asUser('POST', `/chats/${ok.body.chatId}/continue-per-minute`);
-    check('POST /continue-per-minute with ₹10 left for a ₹20 minute -> insufficient + shortfall', cont.status === 400 && cont.body.details?.shortfallAmount === 10);
+    const extendGone = await asUser('POST', `/chats/${ok.body.chatId}/extend`, { packageMinutes: 3 });
+    check('the old extend endpoint is gone (404)', extendGone.status === 404);
     const end = await asUser('POST', `/chats/${ok.body.chatId}/end`, { reason: 'user_ended' });
-    check('ending from the prompt charges nothing more', end.status === 200 && end.body.amountCharged === 60 && await balanceOf(user._id) === 10);
+    check('ending during the package charges nothing more', end.status === 200 && end.body.amountCharged === 60 && await balanceOf(user._id) === 10);
     server.close();
   }
 
@@ -641,17 +574,8 @@ async function sweepAt(chatId, now) {
     const debit = await WalletTransaction.findOne({ chatSession: chat._id, direction: 'debit' });
     check('the wallet line says the discount', debit.amount === 90 && /\(10% off\)/.test(debit.title));
 
-    await sweepAt(chat._id, seconds(chat.packageState.endsAt, 1));
-    const prompt = eventsFor(chat._id, CHAT_EVENTS.PACKAGE_ENDED)[0];
-    check('the extend prompt prices at the current discount (5 min now ₹50)', prompt.payload.packages[1].price === 50 && prompt.payload.packages[1].originalPrice === 100);
-    await settingsService.update({ packageDiscounts: [{ minutes: 5, discountPercent: 20 }] });
-    const changed = await expectError(() => chatService.extendPackage({ chatId: chat._id, userId: user._id, packageMinutes: 5, quotedPrice: 50 }));
-    check('a discount changed while the prompt is open -> price_changed (₹80), nothing charged', changed?.code === 'price_changed' && changed.details?.price === 80 && await balanceOf(user._id) === 910);
-    const ext = await chatService.extendPackage({ chatId: chat._id, userId: user._id, packageMinutes: 5, quotedPrice: 80 });
-    check('re-confirmed extension charged at the discounted ₹80', ext.amount === 80 && await balanceOf(user._id) === 830);
-
     const ended = await chatService.endChat({ chatId: chat._id, accountId: user._id, endedBy: 'user' });
-    check('astrologer share is on what was paid (₹170 - 25% = ₹127)', ended.billing.astrologerEarning === 127 && await earningsOf(astro._id) === 127);
+    check('astrologer share is on what was paid (₹90 - 25% = ₹67)', ended.billing.astrologerEarning === 67 && await earningsOf(astro._id) === 67);
 
     await settingsService.update({ packageDiscounts: [3, 5, 10, 20].map(minutes => ({ minutes, discountPercent: 0 })) });
   }
