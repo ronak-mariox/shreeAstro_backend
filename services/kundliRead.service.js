@@ -7,6 +7,7 @@
  */
 
 const BirthProfile = require('../models/BirthProfile');
+const { ChatSession } = require('../models/Chat');
 const ApiError = require('../utils/ApiError');
 const { getKundliSection } = require('./kundliCache.service');
 const { getChartImageUrl } = require('./chartStorage.service');
@@ -161,7 +162,93 @@ async function getKundliRemedies(profileId, userId) {
   return { profileId, remedies: normalizeRemedies(gemRaw, pujaRaw) };
 }
 
+/** A Date (or ISO string) -> "YYYY-MM-DD" in UTC, the way birth dates are stored (UTC midnight). */
+const dayOf = value => {
+  if (!value) return null;
+  const date = new Date(value);
+  return Number.isNaN(date.getTime()) ? null : date.toISOString().slice(0, 10);
+};
+
+/** Only what the astrologer's screen prints about who the chart is for. */
+const birthSummary = details =>
+  details
+    ? {
+        fullName: details.fullName,
+        gender: details.gender,
+        dateOfBirth: details.dateOfBirth,
+        timeOfBirth: details.timeOfBirth,
+        place: details.place?.formatted,
+      }
+    : undefined;
+
+/**
+ * GET /chats/:chatId/kundli — the SEEKER's already-generated kundli, for the
+ * astrologer in that consultation (or the seeker themself).
+ *
+ * Which chart: the seeker's saved birth profile whose date (and, when given,
+ * time) of birth matches the details they filed on this consultation's
+ * intake — so the astrologer sees the chart of the person being asked
+ * about. With no birth date on the intake, their latest "self" profile. If
+ * nothing matches, `found: false` with the intake's details, so the app can
+ * say so and pre-fill its form; a chart for someone else is never shown in
+ * its place.
+ *
+ * Read-only and credit-free: the overview comes from the same stored
+ * sections the seeker's own kundli screen reads, and dasha is the
+ * mahadasha list already stored when the kundli was generated (the lazily
+ * fetched antardasha breakdown is left out, so opening this never spends).
+ */
+async function getSeekerKundliForChat({ chatId, accountId, origin }) {
+  const chat = await ChatSession.findById(chatId).catch(() => null);
+  if (!chat) {
+    throw ApiError.notFound('Chat not found.');
+  }
+  if (!chat.roleOf(accountId)) {
+    throw ApiError.forbidden('You are not part of this chat.');
+  }
+
+  const intake = chat.intake?.birthDetails;
+  const intakeDay = dayOf(intake?.dateOfBirth);
+  const profiles = await BirthProfile.find({ user: chat.user }).sort({ createdAt: -1 }).lean();
+
+  const profile = intakeDay
+    ? profiles.find(entry =>
+        dayOf(entry.birthDetails?.dateOfBirth) === intakeDay
+        && (!intake?.timeOfBirth || !entry.birthDetails?.timeOfBirth || entry.birthDetails.timeOfBirth === intake.timeOfBirth))
+    : profiles.find(entry => entry.relation === 'self') ?? profiles[0];
+
+  if (!profile) {
+    return { found: false, birthDetails: birthSummary(intake) };
+  }
+
+  const profileId = String(profile._id);
+  const overview = await getKundliOverview(profileId, profile.user, origin);
+
+  let mahadasha = [];
+  try {
+    const majorRaw = await getKundliSection(profile, 'major_vdasha');
+    mahadasha = normalizeDashaPeriods(majorRaw, findCurrentLord(normalizeDashaPeriods(majorRaw)));
+  } catch (error) {
+    /** Dasha is one tab of several — the chart and planets still show without it. */
+    console.error(`[kundliRead] dasha unavailable for ${profileId}:`, error.message);
+  }
+
+  return {
+    found: true,
+    profileId,
+    status: profile.status,
+    birthDetails: birthSummary(profile.birthDetails),
+    chart: overview.chart,
+    lagna: overview.lagna,
+    nakshatra: overview.nakshatra,
+    keyPositions: overview.keyPositions,
+    planetaryPositions: overview.planetaryPositions,
+    mahadasha,
+  };
+}
+
 module.exports = {
+  getSeekerKundliForChat,
   loadOwnedBirthProfile,
   getKundliOverview,
   getKundliDasha,

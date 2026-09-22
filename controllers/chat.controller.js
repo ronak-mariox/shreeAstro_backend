@@ -8,6 +8,7 @@
  */
 
 const chatService = require('../services/chat.service');
+const kundliReadService = require('../services/kundliRead.service');
 const asyncHandler = require('../utils/asyncHandler');
 
 /** POST /api/v1/chats/precheck — is the seeker's balance enough to start, and for how many minutes? Creates nothing. */
@@ -62,6 +63,16 @@ const continueAfterPackage = asyncHandler(async (req, res) => {
     mode: req.body.mode,
     packageMinutes: req.body.packageMinutes,
     quotedPrice: req.body.quotedPrice,
+  });
+  return res.json(result);
+});
+
+/** GET /api/v1/chats/:chatId/kundli — the seeker's saved kundli, for the astrologer in this consultation. */
+const kundli = asyncHandler(async (req, res) => {
+  const result = await kundliReadService.getSeekerKundliForChat({
+    chatId: req.params.chatId,
+    accountId: req.account.accountId,
+    origin: `${req.protocol}://${req.get('host')}`,
   });
   return res.json(result);
 });
@@ -217,4 +228,4 @@ const askAi = asyncHandler(async (req, res) => {
   return res.status(201).json(result);
 });
 
-module.exports = { aiThread, askAi, precheck, state, request, continueAfterPackage, accept, reject, cancel, end, rate, list, messages, send };
+module.exports = { aiThread, askAi, precheck, state, request, continueAfterPackage, kundli, accept, reject, cancel, end, rate, list, messages, send };

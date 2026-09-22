@@ -349,6 +349,32 @@ async function sweepAt(chatId, now) {
     markScenario(8, 'Package ends with low wallet → warning, pause, recharge, approval to continue', ended?.payload.canContinue === false && cont.amount === 60);
   }
 
+  /* ------------------------------------------------ the reported case */
+  section('reported: package over, partial recharge to ₹44, per-minute at ₹30 → one full paid minute, then the normal pause');
+  {
+    const user = await makeUser(104);
+    const astro = await makeAstrologer({ chatRate: 30 });
+    const chat = await startPackage({ user, astro, minutes: 3, quotedPrice: 90 });
+    await sweepAt(chat._id, seconds(chat.packageState.endsAt, 1));
+    const ended = eventsFor(chat._id, CHAT_EVENTS.PACKAGE_ENDED)[0];
+    check('₹14 left: nothing affordable yet, recharge first', ended.payload.canContinue === false && await balanceOf(user._id) === 14);
+    await walletService.post({ ownerRole: 'user', ownerId: user._id, direction: 'credit', type: 'topup', amount: 30, title: 'Top-up' });
+    const view = (await chatService.getSessionState({ chatId: chat._id, accountId: user._id })).package;
+    check('₹44 after recharge: per-minute affordable, packages not', view.perMinuteAffordable === true && view.packages.every(q => !q.affordable) && view.canContinue === true);
+    const cont = await chatService.continueConsultation({ chatId: chat._id, userId: user._id, mode: 'per_minute' });
+    check('per-minute STARTS: first minute charged (₹44 → ₹14)', cont.mode === 'per_minute' && cont.balanceRemaining === 14);
+    const switched = await ChatSession.findById(chat._id);
+    const lowBefore = eventsFor(chat._id, CHAT_EVENTS.LOW_BALANCE).length;
+    const warn = await sweepAt(chat._id, seconds(switched.lastBilledAt, 30));
+    check('mid-minute: the next minute is flagged unaffordable (a warning only — this minute is paid)',
+      warn.action === 'check_ahead_warned' && eventsFor(chat._id, CHAT_EVENTS.LOW_BALANCE).length === lowBefore + 1
+      && eventsFor(chat._id, CHAT_EVENTS.LOW_BALANCE).at(-1).payload.exhausted === false);
+    check('still active and unpaused during the paid minute', !(await ChatSession.findById(chat._id)).balanceExhaustedAt);
+    const cut = await sweepAt(chat._id, seconds(switched.lastBilledAt, 61));
+    check('after the paid minute: the ordinary per-minute pause, nothing overcharged', cut.action === 'balance_paused' && await balanceOf(user._id) === 14);
+    await chatService.endChat({ chatId: chat._id, accountId: user._id, endedBy: 'user' });
+  }
+
   /* ------------------------------------------------ rate change */
   section('edge — rate changes between opening the form and submitting');
   {
