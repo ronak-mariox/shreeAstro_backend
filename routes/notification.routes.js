@@ -12,7 +12,7 @@ const { authenticate, authorize } = require('../middlewares/auth.middleware');
 
 const router = express.Router();
 
-router.use(authenticate, authorize('user', 'astrologer'));
+router.use(authenticate, authorize('user', 'astrologer', 'admin'));
 
 router.get('/', userController.listNotifications);
 router.post('/read', userController.markNotificationsRead);

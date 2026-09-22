@@ -14,8 +14,11 @@
 const Astrologer = require('../models/Astrologer');
 const AstrologerProfile = require('../models/AstrologerProfile');
 const { ChatSession } = require('../models/Chat');
-const WalletTransaction = require('../models/WalletTransaction');
 const ApiError = require('../utils/ApiError');
+const { istDateString, startOfIstDay } = require('../utils/istDate');
+const chatService = require('./chat.service');
+const notificationService = require('./notification.service');
+const walletService = require('./wallet.service');
 
 /**
  * The only astrologers a seeker may see.
@@ -61,7 +64,6 @@ function toDirectoryCard(astrologer) {
       chat: chat ? { was: chat.ratePerMinute, now: chat.effectiveRate } : null,
       call: call ? { was: call.ratePerMinute, now: call.effectiveRate } : null,
     },
-    freeMinutes: chat?.freeMinutes || 0,
   };
 }
 
@@ -163,7 +165,7 @@ async function getAstrologerProfile(astrologerId) {
     tagline: profile?.tagline,
     specializations: profile?.specializations || [],
     topics: profile?.topics || [],
-    gallery: (profile?.gallery || []).map(file => file.url),
+    gallery: (profile?.gallery || []).map(item => item.file.url),
     ratingBreakdown: astrologer.metrics?.ratingBreakdown,
     chatMinutes: astrologer.metrics?.chatMinutes || 0,
     callMinutes: astrologer.metrics?.callMinutes || 0,
@@ -192,6 +194,8 @@ async function recentReviews(astrologerId, limit = 20, { page = 1 } = {}) {
     rating: session.review.rating,
     comment: session.review.comment,
     reply: session.review.reply,
+    flagged: session.review.flagged,
+    pinned: session.review.pinned,
     channel: session.channel,
     durationSeconds: session.durationSeconds,
     at: session.review.ratedAt,
@@ -280,7 +284,6 @@ async function setOwnRates(astrologerId, services = []) {
     isEnabled: service.isEnabled !== false,
     ratePerMinute: Number(service.ratePerMinute),
     offerPercent: Number(service.offerPercent) || 0,
-    freeMinutes: Number(service.freeMinutes) || 0,
   }));
   await astrologer.save();
 
@@ -300,7 +303,7 @@ async function getOwnProfile(astrologerId) {
     secondaryPhone: astrologer.secondaryPhone?.number,
     gender: astrologer.gender,
     dateOfBirth: astrologer.dateOfBirth,
-    photo: astrologer.photoUrl,
+    photoUrl: astrologer.photoUrl,
     applicationStatus: astrologer.applicationStatus,
     onboardingStep: astrologer.onboardingStep,
     rejectionReason: astrologer.approval?.rejectionReason,
@@ -405,12 +408,12 @@ async function updateOwnProfile(astrologerId, changes) {
 }
 
 /**
- * Switches a service on or off, or changes its free minutes.
+ * Switches a service on or off.
  *
  * The *rate* is deliberately not settable here — a price change has to be
  * approved, which is what requestPriceChange below is for.
  */
-async function setService(astrologerId, { type, isEnabled, freeMinutes }) {
+async function setService(astrologerId, { type, isEnabled }) {
   const astrologer = await Astrologer.findById(astrologerId);
   if (!astrologer) {
     throw ApiError.notFound('Account not found.');
@@ -423,9 +426,6 @@ async function setService(astrologerId, { type, isEnabled, freeMinutes }) {
 
   if (isEnabled !== undefined) {
     service.isEnabled = Boolean(isEnabled);
-  }
-  if (freeMinutes !== undefined) {
-    service.freeMinutes = Math.max(Number(freeMinutes) || 0, 0);
   }
 
   await astrologer.save();
@@ -476,6 +476,13 @@ async function requestPriceChange(astrologerId, { service, requestedRate, offerP
   });
   await profile.save();
 
+  await notificationService.notifyAdmins({
+    type: 'system',
+    title: 'Price change requested',
+    body: `${astrologer.name} wants their ${service} rate changed to ₹${requestedRate}/min.`,
+    action: { screen: 'astrologer', id: String(astrologerId) },
+  });
+
   return profile.priceChangeRequests[profile.priceChangeRequests.length - 1];
 }
 
@@ -493,7 +500,6 @@ async function listServiceRates(astrologerId) {
       ratePerMinute: service.ratePerMinute,
       effectiveRate: service.effectiveRate,
       offerPercent: service.offerPercent,
-      freeMinutes: service.freeMinutes,
       isEnabled: service.isEnabled,
       request: request
         ? {
@@ -548,6 +554,35 @@ async function deleteDocument(astrologerId, documentId) {
   return profile.documents;
 }
 
+/**
+ * The portfolio gallery (astro_app Edit Profile) — separate from the single
+ * `photoUrl` on the account itself; an astrologer can file several of these.
+ */
+async function listGalleryImages(astrologerId) {
+  const { profile } = await ownProfile(astrologerId);
+  return profile.gallery;
+}
+
+async function addGalleryImage(astrologerId, file) {
+  const { profile } = await ownProfile(astrologerId);
+  profile.gallery.push({ file });
+  await profile.save();
+  return profile.gallery;
+}
+
+async function deleteGalleryImage(astrologerId, imageId) {
+  const { profile } = await ownProfile(astrologerId);
+
+  const image = profile.gallery.id(imageId);
+  if (!image) {
+    throw ApiError.notFound('That photo is no longer on file.');
+  }
+
+  image.deleteOne();
+  await profile.save();
+  return profile.gallery;
+}
+
 /** Adds a payout account (astro_app Bank Details). */
 async function addBankAccount(astrologerId, account) {
   const { astrologer, profile } = await ownProfile(astrologerId);
@@ -595,6 +630,13 @@ async function submitApplication(astrologerId) {
   astrologer.onboardingStep = 5;
   await astrologer.save();
 
+  await notificationService.notifyAdmins({
+    type: 'application',
+    title: 'New astrologer application',
+    body: `${astrologer.name} has submitted their application for review.`,
+    action: { screen: 'astrologer', id: String(astrologer._id) },
+  });
+
   return { applicationStatus: astrologer.applicationStatus };
 }
 
@@ -608,22 +650,13 @@ async function submitApplication(astrologerId) {
 async function getDashboard(astrologerId) {
   const { astrologer } = await ownProfile(astrologerId);
 
-  const startOfToday = new Date();
-  startOfToday.setHours(0, 0, 0, 0);
+  /** So a request nobody answered in time stops counting as pending here too. */
+  await chatService.expireStaleRequests(astrologerId);
 
-  const [todayEarnings, todayConsultations, pendingRequests] = await Promise.all([
-    WalletTransaction.aggregate([
-      {
-        $match: {
-          owner: astrologer._id,
-          ownerRole: 'astrologer',
-          direction: 'credit',
-          status: 'success',
-          createdAt: { $gte: startOfToday },
-        },
-      },
-      { $group: { _id: null, total: { $sum: '$amount' } } },
-    ]),
+  const startOfToday = startOfIstDay(istDateString());
+
+  const [earnings, todayConsultations, pendingRequests] = await Promise.all([
+    walletService.getAstrologerEarnings(astrologerId),
     ChatSession.countDocuments({
       astrologer: astrologerId,
       status: 'ended',
@@ -637,10 +670,10 @@ async function getDashboard(astrologerId) {
     photo: astrologer.photoUrl,
     isOnline: astrologer.presence?.isOnline || false,
     earnings: {
-      today: todayEarnings[0]?.total || 0,
-      balance: astrologer.earnings?.balance || 0,
-      thisMonth: astrologer.earnings?.thisMonth || 0,
-      lifetime: astrologer.earnings?.lifetime || 0,
+      today: earnings.today,
+      balance: earnings.balance || 0,
+      thisMonth: earnings.thisMonth,
+      lifetime: earnings.lifetime || 0,
     },
     performance: {
       consultationsToday: todayConsultations,
@@ -658,7 +691,6 @@ async function getDashboard(astrologerId) {
       isEnabled: service.isEnabled,
       ratePerMinute: service.ratePerMinute,
       effectiveRate: service.effectiveRate,
-      freeMinutes: service.freeMinutes,
     })),
     pendingRequests,
     missing: missingProfileFields(astrologer),
@@ -778,6 +810,9 @@ module.exports = {
   addDocument,
   listDocuments,
   deleteDocument,
+  listGalleryImages,
+  addGalleryImage,
+  deleteGalleryImage,
   addBankAccount,
   listBankAccounts,
   submitApplication,

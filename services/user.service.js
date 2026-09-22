@@ -10,7 +10,101 @@ const User = require('../models/User');
 const UserProfile = require('../models/UserProfile');
 const Astrologer = require('../models/Astrologer');
 const ApiError = require('../utils/ApiError');
+const env = require('../config/env');
 const { parseBirthDate, parseBirthTime, parseBirthPlace } = require('./auth.service');
+const { sunSignFromDate } = require('../utils/zodiac');
+const { computeBirthHash } = require('../utils/birthHash');
+
+/** "leo" -> "Leo" — ZODIAC_ICONS on the frontend (and the zodiac schema's own enum) key by Title Case. */
+function titleCaseSign(sign) {
+  return sign.charAt(0).toUpperCase() + sign.slice(1);
+}
+
+/**
+ * Best-effort background enrichment, fired once right after Birth Details are
+ * first saved (see controllers/auth.controller.js's register handler).
+ *
+ * "Save & Continue" only ever stores the birth place as typed text (see
+ * auth.service.js's parseBirthPlace) — no geocoding happens there, since that
+ * flow was never required to. Generating a full kundli is the one place that
+ * DOES geocode a place, but it needs the seeker to pick one from
+ * /places/search and then hit "Generate Kundli" specifically. This closes
+ * that gap for the real Vedic Moon sign ("rashi") specifically: it geocodes
+ * whatever place text is already on file and fetches only /astro_details
+ * (never the full 12-call batch — nothing else here needs it) through the
+ * same choke point and shared credit budget as everything else, then caches
+ * the result permanently on UserProfile.zodiac so it is computed once ever.
+ *
+ * Every failure here (an ungeocodable place, the shared credit budget being
+ * exhausted, a transient provider error) is swallowed on purpose: this always
+ * runs after the response that actually mattered has already gone out, so
+ * nothing here may ever surface as a user-facing error. getHome() below
+ * simply has no rashi to show yet if this hasn't succeeded.
+ */
+async function enrichZodiacFromBirthDetails(userId) {
+  const geoService = require('./geo.service');
+  const { getKundliSection } = require('./kundliCache.service');
+  const { normalizeAstroDetails } = require('./kundliNormalize');
+
+  try {
+    const profile = await UserProfile.findOne({ user: userId });
+    const { birthDetails } = profile ?? {};
+    if (!birthDetails?.dateOfBirth || !birthDetails?.timeOfBirth || !birthDetails.place?.formatted) {
+      return;
+    }
+
+    const [place] = await geoService.searchPlaces(birthDetails.place.formatted);
+    if (!place) {
+      return;
+    }
+
+    const isoDob = birthDetails.dateOfBirth.toISOString().slice(0, 10);
+    const { tzone } = await geoService.getTimezoneForDate(place.latitude, place.longitude, isoDob);
+    const { ayanamsha } = env.astrologyApi;
+    const birthHash = computeBirthHash({
+      dob: isoDob,
+      tob: birthDetails.timeOfBirth,
+      lat: place.latitude,
+      lon: place.longitude,
+      ayanamsha,
+    });
+
+    /**
+     * getKundliSection only needs birthHash for a cache HIT — on a miss it
+     * hands this straight to astrologyApi.client's callProvider, which reads
+     * birthDetails/tzone/ayanamsha off it exactly like a real BirthProfile
+     * document would (see services/kundli.service.js's createBirthProfile).
+     * A plain object matching that same shape is all callProvider ever reads.
+     */
+    const pseudoBirthProfile = {
+      birthHash,
+      birthDetails: {
+        dateOfBirth: birthDetails.dateOfBirth,
+        timeOfBirth: birthDetails.timeOfBirth,
+        place: { latitude: place.latitude, longitude: place.longitude },
+      },
+      tzone,
+      ayanamsha,
+    };
+    const raw = await getKundliSection(pseudoBirthProfile, 'astro_details');
+    const astro = normalizeAstroDetails(raw);
+
+    await UserProfile.updateOne(
+      { _id: profile._id },
+      {
+        $set: {
+          'zodiac.sunSign': titleCaseSign(sunSignFromDate(birthDetails.dateOfBirth)),
+          'zodiac.moonSign': astro.moonSign,
+          'zodiac.ascendant': astro.lagna,
+          'zodiac.nakshatra': astro.nakshatra,
+          'zodiac.computedAt': new Date(),
+        },
+      },
+    );
+  } catch (error) {
+    console.error(`[user.service] zodiac enrichment failed for user ${userId}:`, error.message);
+  }
+}
 
 /** Loads the account and its profile together, or throws. */
 async function loadUser(userId) {
@@ -46,12 +140,12 @@ async function getProfile(userId) {
     zodiac: profile.zodiac,
     wallet: user.wallet,
     stats: user.stats,
-    freeConsultation: user.freeConsultation,
     unreadNotifications: user.unreadNotifications,
     isPhoneVerified: user.isPhoneVerified,
     isEmailVerified: user.isEmailVerified,
     notificationPrefs: user.notificationPrefs,
     completion: profile.completion,
+    profileComplete: profile.completion?.percent === 100,
   };
 }
 
@@ -133,11 +227,21 @@ async function updateNotificationPrefs(userId, prefs) {
  */
 async function getHome(userId) {
   const horoscopeService = require('./horoscope.service');
+  const { currentPlanetPositions } = require('./transitPlanets.service');
   const { ChatSession } = require('../models/Chat');
 
   const { user, profile } = await loadUser(userId);
 
-  const sign = profile.zodiac?.sunSign;
+  /**
+   * The real Vedic Moon sign ("rashi") — see enrichZodiacFromBirthDetails,
+   * which resolves and caches this once, in the background, right after
+   * Birth Details are first saved. Deliberately no fallback to a Western Sun
+   * sign here: what Indian users mean by "rashi" is the Moon sign, and
+   * showing a Sun sign under that label would just be wrong, not merely
+   * approximate. Until enrichment has finished (or if the place on file
+   * could never be geocoded), the home screen simply has no rashi yet.
+   */
+  const moonSign = profile.zodiac?.moonSign;
   const recent = await ChatSession.find({
     user: userId,
     status: 'ended',
@@ -151,17 +255,16 @@ async function getHome(userId) {
     profile: {
       name: user.name,
       avatarUrl: user.avatarUrl,
-      sunSign: sign,
+      moonSign,
       dateOfBirth: profile.birthDetails?.dateOfBirth,
     },
     wallet: {
       balance: user.wallet?.balance || 0,
       currency: user.wallet?.currency || 'INR',
     },
-    /** No sign on file yet means no reading — the app nudges for birth details. */
-    horoscope: sign ? horoscopeService.dailyFor(sign) : null,
-    planetPositions: horoscopeService.planetPositions(),
-    freeConsultation: user.freeConsultation,
+    /** No rashi resolved yet means no reading — the app nudges to generate a kundli. */
+    horoscope: moonSign ? await horoscopeService.dailyFor(moonSign) : null,
+    planetPositions: await currentPlanetPositions(),
     unreadNotifications: user.unreadNotifications || 0,
     recentConsultations: recent.map(chat => ({
       id: String(chat._id),
@@ -269,4 +372,5 @@ module.exports = {
   deleteKundli,
   toggleFavourite,
   listFavourites,
+  enrichZodiacFromBirthDetails,
 };

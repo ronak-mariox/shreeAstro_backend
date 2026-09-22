@@ -23,6 +23,7 @@ const { Server } = require('socket.io');
 const env = require('../config/env');
 const { verifyToken, tokenFrom } = require('../utils/token');
 const { setAstrologerOnline } = require('../services/presence.service');
+const chatService = require('../services/chat.service');
 const { registerChatHandlers } = require('./chat.handlers');
 
 /** Set by initSocket, and handed to the rest of the app by getIO. */
@@ -88,6 +89,12 @@ function initSocket(server) {
     if (role === 'astrologer') {
       try {
         await setAstrologerOnline(accountId, true);
+        /**
+         * Resumes any session this astrologer's own disconnect had paused —
+         * a no-op when nothing was paused. Reconnecting from a second device
+         * while a first is already up would also run this harmlessly.
+         */
+        await chatService.resumeSessionsForAstrologer(accountId);
       } catch (error) {
         console.error('[socket] presence:', error.message);
       }
@@ -111,6 +118,14 @@ function initSocket(server) {
         if (!stillConnected || stillConnected.size === 0) {
           try {
             await setAstrologerOnline(accountId, false);
+            /**
+             * Pauses billing on whatever this astrologer has active — the
+             * seeker's meter must not run while nobody is there to answer.
+             * jobs/chatBilling.job.js's sweep is what actually ends the
+             * session if this astrologer never comes back within
+             * ASTROLOGER_RECONNECT_GRACE_SECONDS.
+             */
+            await chatService.pauseSessionsForAstrologer(accountId);
           } catch (error) {
             console.error('[socket] presence:', error.message);
           }

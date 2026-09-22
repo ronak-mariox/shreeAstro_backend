@@ -22,8 +22,6 @@ const settingsSchema = new Schema(
     minRecharge: { type: Number, default: 10, min: 1 },
     maxRecharge: { type: Number, default: 100000, min: 1 },
     minPayout: { type: Number, default: 100, min: 1 },
-    /** Free minutes on a seeker's very first consultation. */
-    freeTrialMinutes: { type: Number, default: 3, min: 0 },
     payoutCycle: {
       type: String,
       enum: ['daily', 'weekly', 'fortnightly', 'monthly'],

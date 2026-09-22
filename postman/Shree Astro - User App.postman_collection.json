@@ -1123,7 +1123,7 @@
                 "chats"
               ]
             },
-            "description": "What the Chat Intake screen sends.\n\nThree checks run in order: the astrologer can take work, you can afford at least a minute, and you do not already have a chat open with them.\n\n**The rate is fixed here**, so a price change mid-chat cannot affect what you pay. `freeMinutes` is the larger of the platform's first-consultation offer and whatever this astrologer grants \u2014 with free minutes available, an empty wallet is not a blocker.\n\n`topic` must be one of the ids in models/constants.js.",
+            "description": "What the Chat Intake screen sends.\n\nThree checks run in order: the astrologer can take work, you can afford at least a minute, and you do not already have a chat open with them.\n\n**The rate is fixed here**, so a price change mid-chat cannot affect what you pay.\n\n`topic` must be one of the ids in models/constants.js.",
             "body": {
               "mode": "raw",
               "raw": "{\n  \"astrologerId\": \"{{astrologerId}}\",\n  \"channel\": \"chat\",\n  \"intake\": {\n    \"topic\": \"career-job\",\n    \"question\": \"When will I change jobs?\",\n    \"minutes\": 10\n  }\n}",

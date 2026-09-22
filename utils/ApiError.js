@@ -26,8 +26,8 @@ class ApiError extends Error {
     Error.captureStackTrace(this, this.constructor);
   }
 
-  static badRequest(message, fields) {
-    return new ApiError(400, message, fields);
+  static badRequest(message, fields, code) {
+    return new ApiError(400, message, fields, code);
   }
 
   static unauthorized(message = 'Please sign in.', code) {

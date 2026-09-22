@@ -116,6 +116,33 @@ const validateLoginOtpVerify = [
   validate,
 ];
 
+/**
+ * `fullName`, shared by Apple and Google: optional, and only ever meaningful
+ * the one time it lands on a brand-new account (see auth.service.js's
+ * createSocialAccount) — every other call simply doesn't send it.
+ */
+const SOCIAL_FULL_NAME = body('fullName')
+  .optional({ values: 'falsy' })
+  .trim()
+  .isLength({ min: 2 })
+  .withMessage('Enter your full name.');
+
+/** POST /auth/apple — user_app's "Continue with Apple". */
+const validateAppleLogin = [
+  body('identityToken').trim().notEmpty().withMessage('Missing Apple identity token.'),
+  SOCIAL_FULL_NAME,
+
+  validate,
+];
+
+/** POST /auth/google — user_app's "Continue with Google". */
+const validateGoogleLogin = [
+  body('idToken').trim().notEmpty().withMessage('Missing Google ID token.'),
+  SOCIAL_FULL_NAME,
+
+  validate,
+];
+
 /** POST /auth/astrologer/register — step one and two of the wizard. */
 const validateAstrologerRegister = [
   body('fullName').trim().isLength({ min: 2 }).withMessage('Enter your full name.'),
@@ -161,11 +188,29 @@ const validateAdminOtp = [
   validate,
 ];
 
+/** POST /auth/admin/forgot-password — where to send the reset code. */
+const validateAdminForgotPassword = [
+  body('email').trim().isEmail().withMessage('Enter a valid email address.'),
+  validate,
+];
+
+/** POST /auth/admin/reset-password — the emailed code and a new password. */
+const validateAdminResetPassword = [
+  body('email').trim().isEmail().withMessage('Enter a valid email address.'),
+  body('code').trim().matches(OTP_PATTERN).withMessage('Enter the 6-digit code.'),
+  body('password').isLength({ min: 6 }).withMessage('Password must be at least 6 characters.'),
+  validate,
+];
+
 module.exports = {
   validateRegister,
   validateAstrologerRegister,
   validateLoginOtpRequest,
   validateLoginOtpVerify,
+  validateAppleLogin,
+  validateGoogleLogin,
   validateAdminLogin,
   validateAdminOtp,
+  validateAdminForgotPassword,
+  validateAdminResetPassword,
 };

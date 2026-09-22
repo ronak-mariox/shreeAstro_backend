@@ -10,13 +10,16 @@
  * Separate secrets mean neither token can be presented where the other is
  * expected, even if one leaks.
  *
- * Both are self-contained: everything needed to check one is inside it and in
- * the secret, so nothing about a signed-in client is written down anywhere.
- * That is what makes the API stateless — and what makes a token impossible to
- * take back before it expires. See services/auth.service.js for what that
- * costs at sign-out.
+ * Both are self-contained: everything needed to check one's signature and
+ * expiry is inside it and in the secret. The access token is left fully
+ * stateless on purpose — it is short-lived, and checking it against anything
+ * external on every request would be wasteful. The refresh token additionally
+ * carries a `jti`, which services/refreshToken.service.js records and checks,
+ * so that one — the one worth actually being able to take back — can be
+ * revoked at sign-out instead of just outliving the session on the client.
  */
 
+const crypto = require('crypto');
 const jwt = require('jsonwebtoken');
 
 const env = require('../config/env');
@@ -44,9 +47,15 @@ function signAccessToken(accountId, role) {
   });
 }
 
-/** The same two claims, plus `typ` so it cannot pass as an access token. */
-function signRefreshToken(accountId, role) {
-  return jwt.sign({ sub: String(accountId), role, typ: 'refresh' }, env.refreshSecret, {
+/**
+ * The same two claims, plus `typ` so it cannot pass as an access token, and a
+ * `jti` — a random id with no meaning of its own, whose only job is to give
+ * services/refreshToken.service.js something to record and later check, since
+ * a JWT's signature alone can prove a token is genuine but never that it
+ * hasn't since been revoked.
+ */
+function signRefreshToken(accountId, role, jti = crypto.randomUUID()) {
+  return jwt.sign({ sub: String(accountId), role, typ: 'refresh', jti }, env.refreshSecret, {
     expiresIn: JWT_REFRESH_EXPIRES_IN,
   });
 }
@@ -100,8 +109,11 @@ function verifyRefreshToken(token) {
   if (!ROLES.includes(payload.role)) {
     throw authError('Unknown role in token.', 'invalid_token');
   }
+  if (!payload.jti) {
+    throw authError('Wrong kind of token.', 'invalid_token');
+  }
 
-  return { accountId: payload.sub, role: payload.role };
+  return { accountId: payload.sub, role: payload.role, jti: payload.jti };
 }
 
 /**

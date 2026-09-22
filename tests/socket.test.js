@@ -41,7 +41,7 @@ const emit = (socket, event, payload) =>
   const authService = require('../services/auth.service');
   const chatService = require('../services/chat.service');
 
-  const user = await User.create({ name: 'Arjun', phone: { number: '9876543210' }, email: 'a@x.com' });
+  const user = await User.create({ name: 'Arjun', phone: { number: '9876543210' }, email: 'a@x.com', wallet: { balance: 1000 } });
   const astrologer = await Astrologer.create({
     name: 'Pt. Rajesh', phone: { number: '9811111111' },
     applicationStatus: 'approved', status: 'active',
@@ -49,8 +49,8 @@ const emit = (socket, event, payload) =>
     presence: { isOnline: true },
   });
 
-  const userTokens = authService.issueTokens(user._id, 'user');
-  const astroTokens = authService.issueTokens(astrologer._id, 'astrologer');
+  const userTokens = await authService.issueTokens(user._id, 'user');
+  const astroTokens = await authService.issueTokens(astrologer._id, 'astrologer');
 
   const url = `http://127.0.0.1:${PORT}`;
 
@@ -115,7 +115,8 @@ const emit = (socket, event, payload) =>
   check('non-text messages are refused', /not enabled/.test(badType.error || ''), badType);
 
   const stranger = await User.create({ name: 'Nosy', phone: { number: '9700000000' } });
-  const strangerSocket = ioClient(url, { auth: { token: authService.issueTokens(stranger._id, 'user').accessToken }, transports: ['websocket'] });
+  const strangerTokens = await authService.issueTokens(stranger._id, 'user');
+  const strangerSocket = ioClient(url, { auth: { token: strangerTokens.accessToken }, transports: ['websocket'] });
   await once(strangerSocket, 'connect');
   const denied = await emit(strangerSocket, CHAT_EVENTS.JOIN, { chatId: String(chat._id) });
   check('a stranger cannot join the room', /not part of this chat/.test(denied.error || ''), denied);

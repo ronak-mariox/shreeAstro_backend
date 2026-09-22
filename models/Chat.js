@@ -16,11 +16,18 @@
  * transcript and is the cursor a reconnecting client resumes from;
  * `clientMessageId` makes a retried send safe. Typing indicators and socket ids
  * are not stored — they belong in memory, not in a document.
+ *
+ * Retention: the AI assistant's own messages carry a 7-day MongoDB TTL index
+ * (see `chatType` and the index below) — a paid consultation's transcript
+ * never does. The assistant's memory of anything that ages out of that
+ * window lives separately, in models/AssistantMemory.js, with its own TTL —
+ * see that file for why it isn't just a field on ChatSession.
  */
 
 const mongoose = require('mongoose');
 const { Schema } = mongoose;
 
+const env = require('../config/env');
 const { birthDetailsSchema } = require('./common');
 const { TOPICS, CHANNELS } = require('./constants');
 
@@ -34,6 +41,12 @@ const CHAT_EVENTS = {
   READ: 'message:read',
   TYPING: 'chat:typing',
   ENDED: 'session:ended',
+  /** Server -> client only, from the live billing tick (services/chat.service.js / jobs/chatBilling.job.js). */
+  TICK: 'chat:tick',
+  LOW_BALANCE: 'chat:low_balance',
+  /** Server -> client only, from the astrologer's own socket connecting/disconnecting while a session is active (services/chat.service.js's pauseSessionsForAstrologer/resumeSessionsForAstrologer). */
+  ASTROLOGER_LEFT: 'chat:astrologer_left',
+  ASTROLOGER_JOINED: 'chat:astrologer_joined',
 };
 
 const roomFor = chatId => `chat:${chatId}`;
@@ -80,10 +93,27 @@ const chatSessionSchema = new Schema(
 
     status: {
       type: String,
-      enum: ['requested', 'active', 'ended', 'rejected', 'missed', 'cancelled'],
+      /**
+       * 'expired' is reserved for an idle `ai` thread — not currently set by
+       * anything (there is no cron and no periodic sweep; the AI assistant's
+       * own 7-day retention is a MongoDB TTL index instead, see Message's
+       * `chatType` and models/AssistantMemory.js). A consultation never
+       * reaches this value; it ends through the statuses above instead.
+       */
+      enum: ['requested', 'active', 'ended', 'rejected', 'missed', 'cancelled', 'expired'],
       default: 'requested',
       index: true,
     },
+
+    /**
+     * The AI assistant's own topic tag — unrelated to `intake.topic`'s
+     * consultation-booking taxonomy below. Everything is 'general' today;
+     * `services/assistant.service.js`'s `buildChartSummary` takes a matching
+     * `focus` argument that will eventually read this to decide which chart
+     * details to foreground (10th house for 'career', 7th for 'relationship',
+     * etc.) — not implemented yet, so this is a placeholder for that.
+     */
+    topic: { type: String, trim: true, default: 'general' },
 
     /** What the seeker filled in before the request went out. */
     intake: {
@@ -95,13 +125,59 @@ const chatSessionSchema = new Schema(
 
     /** Per-minute billing, kept on the session so a receipt needs no recompute. */
     billing: {
+      /**
+       * Frozen at request time and never re-read from the astrologer's live
+       * rate again — a rate change mid-session must never affect a chat
+       * already in flight. 'package' is a placeholder for a future billing
+       * model (see `packages` on Astrologer, not built yet); only
+       * 'per_minute' has any billing logic behind it today.
+       */
+      mode: { type: String, enum: ['per_minute', 'package'], default: 'per_minute' },
       ratePerMinute: { type: Number, default: 0, min: 0 },
-      freeMinutes: { type: Number, default: 0, min: 0 },
       commissionPercent: { type: Number, default: 0, min: 0, max: 100 },
       amountCharged: { type: Number, default: 0, min: 0 },
       astrologerEarning: { type: Number, default: 0, min: 0 },
       isSettled: { type: Boolean, default: false },
     },
+
+    /**
+     * How many minutes the live billing tick (services/chat.service.js's
+     * billNextMinute, run by jobs/chatBilling.job.js) has already processed.
+     * `endChat` bills anything beyond this up to the true elapsed time as one
+     * final tick, so the total is always `minutesFor(actual elapsed
+     * seconds)`, matching what a lump-sum settle-at-end would have charged —
+     * just spread across the session instead of charged all at once when it
+     * closes.
+     */
+    minutesBilled: { type: Number, default: 0, min: 0 },
+    /** When the tick last ran for this session — a session with none yet is due immediately once active. */
+    lastBilledAt: { type: Date },
+    /** Set the moment a tick first can't afford the next minute — starts the grace period; cleared once the balance clears. */
+    balanceExhaustedAt: { type: Date },
+    /** Set once, so the proactive "2 minutes left" warning fires only once per session, not on every tick. */
+    lowBalanceWarnedAt: { type: Date },
+    /**
+     * Set once the check-ahead phase (tickOneSession, `CHECK_AHEAD_SECONDS`
+     * before the current minute is due) has already evaluated whether the
+     * *next* minute is affordable — whichever way that came out — so the
+     * sweep asks at most once per minute rather than on every 10-second pass
+     * through the check-ahead window. Cleared every time a minute actually
+     * bills (billOneMinute), so the following minute gets its own fresh check.
+     */
+    nextMinuteChecked: { type: Boolean, default: false },
+    /**
+     * Set the moment the astrologer's own socket drops entirely (their last
+     * device, not just one of several — see socket/index.js) while this
+     * session is active. Billing is paused the whole time this is set — the
+     * tick job (runBillingSweep) skips a paused session rather than ticking
+     * it — and cleared the moment they reconnect, which also pushes
+     * `lastBilledAt` forward by exactly how long the pause lasted, so the
+     * outage costs the seeker nothing. Never reconnecting within
+     * `ASTROLOGER_RECONNECT_GRACE_SECONDS` ends the session instead (reason
+     * 'astrologer_disconnected'), with the one minute in progress when they
+     * dropped refunded — see chat.service.js's refundMinute.
+     */
+    astrologerDisconnectedAt: { type: Date },
 
     requestedAt: { type: Date, default: Date.now },
     startedAt: { type: Date },
@@ -166,28 +242,21 @@ chatSessionSchema.methods.acceptsMessages = function acceptsMessages() {
 /**
  * Claims the next sequence number without reading first, so two sockets
  * sending at the same instant still get distinct, ordered numbers.
+ *
+ * Also hands back the chat's own `type` — Message.send needs it to stamp
+ * the new message's `chatType` (see that field's own comment), and this
+ * update already has the document in hand, so that's one lookup, not two.
+ *
+ * @returns {Promise<{ seq: number, chatType: 'consultation'|'ai' }>}
  */
 chatSessionSchema.statics.reserveSeq = async function reserveSeq(chatId) {
   const chat = await this.findByIdAndUpdate(
     chatId,
     { $inc: { messageSeq: 1 } },
-    { returnDocument: 'after', select: 'messageSeq' },
+    { returnDocument: 'after', select: 'messageSeq type' },
   );
   if (!chat) throw new Error(`No chat ${chatId}`);
-  return chat.messageSeq;
-};
-
-/** Closes the meter: what the seeker pays, and what the astrologer keeps. */
-chatSessionSchema.methods.settle = function settle(seconds = this.durationSeconds) {
-  const minutes = Math.max(0, Math.ceil(seconds / 60) - this.billing.freeMinutes);
-  const amount = minutes * this.billing.ratePerMinute;
-  const fee = Math.round((amount * this.billing.commissionPercent) / 100);
-
-  this.durationSeconds = seconds;
-  this.billing.amountCharged = amount;
-  this.billing.astrologerEarning = amount - fee;
-  this.billing.isSettled = true;
-  return this;
+  return { seq: chat.messageSeq, chatType: chat.type };
 };
 
 const ChatSession =
@@ -248,6 +317,31 @@ const messageSchema = new Schema(
     /** Client-generated id; the index below makes a retried send a no-op. */
     clientMessageId: { type: String, trim: true },
     isDeleted: { type: Boolean, default: false },
+
+    /**
+     * Set on the one message requestChat posts from the seeker's own filled-in
+     * intake, the moment the request goes out (services/chat.service.js). Both
+     * apps' chat screens use this to know which bubble may cast a chart —
+     * astro_app's ConsultationChatScreen shows a "Generate Kundli" action on it.
+     */
+    isIntake: { type: Boolean, default: false },
+
+    /**
+     * Estimated once at write time (utils/tokens.js), for the AI assistant's
+     * `getRecentMessages` to spend a token budget against without
+     * re-tokenising the whole thread on every request. `undefined` on every
+     * consultation message — only assistant turns ever set this.
+     */
+    tokenCount: { type: Number, min: 0 },
+
+    /**
+     * The parent ChatSession's own `type`, copied here at write time (see
+     * ChatSession.reserveSeq) purely so the TTL index below can see it — a
+     * partial-filter index can only test fields on the document it indexes,
+     * never a joined parent, and a message never changes which chat it
+     * belongs to, so this can never drift from the truth once set.
+     */
+    chatType: { type: String, enum: ['consultation', 'ai'], required: true },
   },
   {
     timestamps: true,
@@ -267,6 +361,38 @@ messageSchema.index({ chatId: 1, seq: 1 }, { unique: true });
 messageSchema.index(
   { chatId: 1, clientMessageId: 1 },
   { unique: true, partialFilterExpression: { clientMessageId: { $type: 'string' } } },
+);
+
+/**
+ * Retention for the AI assistant's own messages, and only those — a message
+ * becomes eligible for automatic removal `env.assistant.messageRetentionDays`
+ * (7) days after its own `createdAt`, regardless of anything else happening
+ * in its thread. The `partialFilterExpression` scopes this to `chatType:
+ * 'ai'` so a paid consultation's transcript (someone's own record of what
+ * they were told and charged for) is never touched by it; a document
+ * without a matching `chatType` at all (nothing today — see the field's own
+ * comment — but relevant for any row written before this index existed) is
+ * likewise left alone rather than silently swept up.
+ *
+ * No cron, no scheduled job: MongoDB's own TTL monitor does this by itself,
+ * on its own internal schedule (roughly once a minute) — a message due at
+ * 6:00:00pm is not guaranteed gone at exactly that instant, only sometime
+ * after. Nothing that reads a Message should ever assume second-level
+ * precision here.
+ *
+ * services/assistant.service.js's rolling summary is what keeps the *gist*
+ * of anything this index removes — see models/AssistantMemory.js for why
+ * that summary needs, and has, its own separate TTL.
+ *
+ * `expireAfterSeconds` is read from env at index-creation time only: it
+ * becomes whatever this was when the index was first built, and changing
+ * `CHAT_MESSAGE_RETENTION_DAYS` afterwards does not retroactively rewrite an
+ * index Mongo already created with the old number — see this feature's own
+ * migration note for how to change it on a running deployment.
+ */
+messageSchema.index(
+  { createdAt: 1 },
+  { expireAfterSeconds: env.assistant.messageRetentionDays * 24 * 60 * 60, partialFilterExpression: { chatType: 'ai' } },
 );
 
 /** Keeps the union payload honest: right type, switched on, right keys. */
@@ -316,6 +442,7 @@ messageSchema.methods.toSocketPayload = function toSocketPayload() {
     replyTo: this.replyTo ? String(this.replyTo) : null,
     status: this.status,
     clientMessageId: this.clientMessageId,
+    isIntake: this.isIntake,
     createdAt: this.createdAt,
   };
 };
@@ -342,18 +469,22 @@ messageSchema.statics.send = async function send({
   content,
   replyTo,
   clientMessageId,
+  /** Only ever passed by services/assistant.service.js — see the schema field's own comment. */
+  tokenCount,
+  /** Only ever passed by requestChat, for the seeker's own opening message — see the schema field's own comment. */
+  isIntake,
 }) {
   if (clientMessageId) {
     const existing = await this.findOne({ chatId, clientMessageId });
     if (existing) return existing;
   }
 
-  const seq = await ChatSession.reserveSeq(chatId);
+  const { seq, chatType } = await ChatSession.reserveSeq(chatId);
 
   let message;
   try {
     message = await this.create({
-      chatId, senderId, senderRole, type, content, replyTo, clientMessageId, seq,
+      chatId, senderId, senderRole, type, content, replyTo, clientMessageId, seq, tokenCount, chatType, isIntake,
     });
   } catch (error) {
     /** Two sockets raced on the same clientMessageId; the first one wins. */

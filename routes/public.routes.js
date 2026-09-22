@@ -9,6 +9,8 @@
 const express = require('express');
 
 const userController = require('../controllers/user.controller');
+const horoscopeController = require('../controllers/horoscope.controller');
+const horoscopeValidator = require('../validators/horoscope.validator');
 const { authenticate, authorize } = require('../middlewares/auth.middleware');
 
 const router = express.Router();
@@ -18,6 +20,9 @@ router.get('/settings', userController.publicSettings);
 
 /** `?sign=Leo` for one, no sign for all twelve plus the planet positions. */
 router.get('/horoscope', userController.horoscope);
+
+/** `?sign=leo&day=next|previous` — real AstrologyAPI reading, cached at most 12x/day across the whole app. */
+router.get('/horoscope/daily', horoscopeValidator.dailyHoroscope, horoscopeController.getDaily);
 
 /** Support tickets and disputes — both apps file them the same way. */
 router.post('/support/tickets', authenticate, authorize('user', 'astrologer'), userController.createTicket);

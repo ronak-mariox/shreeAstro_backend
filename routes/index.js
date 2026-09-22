@@ -15,6 +15,7 @@
  *   /settings       all         limits, feature switches, app versions
  *   /horoscope      user_app    today's reading and the planet positions
  *   /support        both apps   tickets and disputes
+ *   /places, /kundli, /birth-profiles   user_app   kundli generation (AstrologyAPI-backed)
  */
 
 const express = require('express');
@@ -27,6 +28,7 @@ const walletRoutes = require('./wallet.routes');
 const notificationRoutes = require('./notification.routes');
 const adminRoutes = require('./admin.routes');
 const publicRoutes = require('./public.routes');
+const kundliRoutes = require('./kundli.routes');
 
 const router = express.Router();
 
@@ -41,5 +43,6 @@ router.use('/admin', adminRoutes);
 
 /** Settings, horoscope and support — not tied to one kind of account. */
 router.use('/', publicRoutes);
+router.use('/', kundliRoutes);
 
 module.exports = router;

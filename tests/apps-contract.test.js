@@ -14,6 +14,8 @@ const mongoose = require('mongoose');
 const { connectRedis, redis } = require('../config/redis');
 const { createApp } = require('../app');
 const { hashPassword } = require('../utils/password');
+const astrologyApiClient = require('../services/astrologyApi.client');
+const llm = require('../services/llm');
 
 const PORT = 5089;
 const BASE = `http://127.0.0.1:${PORT}/api/v1`;
@@ -24,6 +26,18 @@ const check = (label, ok, extra) => {
   else { fail += 1; console.log(`  FAIL ${label}${extra !== undefined ? ` -> ${JSON.stringify(extra)}` : ''}`); }
 };
 const section = (t) => console.log(`\n=== ${t} ===`);
+
+/**
+ * Registering a user fires enrichZodiacFromBirthDetails in the background
+ * (see controllers/auth.controller.js), and this file also reads the real
+ * GET /horoscope directly — both would otherwise hit the live AstrologyAPI
+ * transport. geo_details resolving to no results makes the enrichment a
+ * silent, free no-op; sun_sign_prediction still needs a realistic shape,
+ * since /horoscope's response fields are asserted below.
+ */
+const originalAstrologyRequest = astrologyApiClient.request;
+/** POST /chats/ai/messages now calls services/assistant.service.js's generateReply for real, which calls this for real — stubbed for the same reason as astrologyApiClient.request above. */
+const originalLlmChat = llm.chat;
 
 function hasFields(label, object, fields) {
   const missing = fields.filter((path) => {
@@ -51,6 +65,20 @@ const call = (token) => async (method, p, body) => {
   await connectRedis();
   const stale = await redis.keys('*');
   if (stale.length) await redis.del(...stale.map((k) => k.replace('shreeastro-test:', '')));
+
+  astrologyApiClient.request = async path => {
+    if (path.startsWith('sun_sign_prediction/')) {
+      return {
+        status: true,
+        sun_sign: path.split('/').pop(),
+        prediction: {
+          personal_life: 'x', profession: 'x', health: 'x', emotions: 'x', travel: 'x',
+          luck: 'A steady day for confident, quiet progress.',
+        },
+      };
+    }
+    return { geonames: [] };
+  };
 
   const server = createApp().listen(PORT);
   const Admin = require('../models/Admin');
@@ -110,7 +138,7 @@ const call = (token) => async (method, p, body) => {
 
   const table = await astro('GET', '/astrologer/me/service-rates');
   hasFields('what the Price Change table maps from', table.body.items[0], [
-    'service', 'ratePerMinute', 'effectiveRate', 'offerPercent', 'freeMinutes', 'isEnabled',
+    'service', 'ratePerMinute', 'effectiveRate', 'offerPercent', 'isEnabled',
   ]);
 
   section('astro_app — dashboard');
@@ -138,7 +166,7 @@ const call = (token) => async (method, p, body) => {
   const home = await seeker('GET', '/users/me/home');
   hasFields('the home screen', home.body, [
     'profile.name', 'wallet.balance', 'planetPositions.planets',
-    'freeConsultation', 'unreadNotifications', 'recentConsultations',
+    'unreadNotifications', 'recentConsultations',
   ]);
 
   const horoscope = await anon('GET', '/horoscope?sign=Leo');
@@ -150,7 +178,7 @@ const call = (token) => async (method, p, body) => {
   const directory = await seeker('GET', '/astrologers');
   hasFields('a directory card', directory.body.items[0], [
     'id', 'name', 'online', 'expertise', 'languages', 'experienceYears',
-    'rating', 'ratingCount', 'consultations', 'rates', 'freeMinutes',
+    'rating', 'ratingCount', 'consultations', 'rates',
   ]);
   check('rates carry both the list price and the payable one',
     directory.body.items[0].rates.chat.was === 20 && directory.body.items[0].rates.chat.now === 20,
@@ -179,7 +207,7 @@ const call = (token) => async (method, p, body) => {
     astrologerId, channel: 'chat',
     intake: { topic: 'career-job', question: 'Job change?', minutes: 10 },
   });
-  hasFields('the chat request', chat.body, ['chatId', 'status', 'ratePerMinute', 'freeMinutes']);
+  hasFields('the chat request', chat.body, ['chatId', 'status', 'ratePerMinute']);
 
   const queue = await astro('GET', '/astrologer/me/requests');
   hasFields('the incoming-request card', queue.body.items[0], [
@@ -200,7 +228,7 @@ const call = (token) => async (method, p, body) => {
 
   const { ChatSession } = require('../models/Chat');
   await ChatSession.updateOne({ _id: chat.body.chatId }, {
-    startedAt: new Date(Date.now() - 900000), 'billing.freeMinutes': 0,
+    startedAt: new Date(Date.now() - 900000),
   });
   const ended = await seeker('POST', `/chats/${chat.body.chatId}/end`);
   hasFields('the end-of-session receipt', ended.body, [
@@ -250,21 +278,30 @@ const call = (token) => async (method, p, body) => {
 
   const settings = await anon('GET', '/settings');
   hasFields('what the apps read on launch', settings.body.settings, [
-    'minRecharge', 'maxRecharge', 'minPayout', 'freeTrialMinutes',
+    'minRecharge', 'maxRecharge', 'minPayout',
     'features.aiAssistant', 'features.maintenanceMode', 'appVersions.minimumSupported',
   ]);
 
   section('user_app — the AI assistant');
   const ai = await seeker('GET', '/chats/ai');
   hasFields('the AI thread', ai.body, ['chatId', 'items']);
+  llm.chat = async () => ({ type: 'text', text: 'A held-out fake reply, so this contract check never needs a real LLM_PROVIDER or a real network call.' });
   const asked = await seeker('POST', '/chats/ai/messages', { text: 'What does my Jupiter mean?' });
   hasFields('asking answers both turns', asked.body, [
     'chatId', 'question.content', 'answer.content', 'answer.senderRole',
   ]);
+  llm.chat = originalLlmChat;
+
+  astrologyApiClient.request = originalAstrologyRequest;
 
   console.log(`\n${pass} passed, ${fail} failed`);
   server.close();
   await mongoose.disconnect();
   await redis.quit();
   process.exit(fail ? 1 : 0);
-})().catch((e) => { console.error('CRASHED:', e); process.exit(1); });
+})().catch((e) => {
+  astrologyApiClient.request = originalAstrologyRequest;
+  llm.chat = originalLlmChat;
+  console.error('CRASHED:', e);
+  process.exit(1);
+});

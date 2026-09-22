@@ -12,6 +12,13 @@ const mongoose = require('mongoose');
 const { connectRedis, redis } = require('../config/redis');
 const { createApp } = require('../app');
 const { hashPassword } = require('../utils/password');
+const UserProfile = require('../models/UserProfile');
+const astrologyApiClient = require('../services/astrologyApi.client');
+const llm = require('../services/llm');
+const geoDetailsFixture = require('./fixtures/astrologyapi/geo_details.json');
+const timezoneFixture = require('./fixtures/astrologyapi/timezone_with_dst.json');
+const astroDetailsFixture = require('./fixtures/astrologyapi/astro_details.json');
+const planetsExtendedFixture = require('./fixtures/astrologyapi/planets_extended.json');
 
 const PORT = 5094;
 const BASE = `http://127.0.0.1:${PORT}/api/v1`;
@@ -34,12 +41,66 @@ const PATCH = (p, o) => call('PATCH', p, o);
 const PUT = (p, o) => call('PUT', p, o);
 const DELETE = (p, o) => call('DELETE', p, o);
 
+/**
+ * Registration fires enrichZodiacFromBirthDetails in the background without
+ * awaiting it (see controllers/auth.controller.js) — this polls the profile
+ * directly rather than assuming the many awaited calls in between give it
+ * enough time, so the Home check below can never be a flaky race.
+ */
+async function waitForZodiac(userId, attempts = 40) {
+  for (let i = 0; i < attempts; i += 1) {
+    const doc = await UserProfile.findOne({ user: userId }).lean();
+    if (doc?.zodiac?.moonSign) {
+      return doc;
+    }
+    await new Promise(resolve => setTimeout(resolve, 25));
+  }
+  return UserProfile.findOne({ user: userId }).lean();
+}
+
+/**
+ * Stubbed for the WHOLE file, from before the very first /auth/register call:
+ * registering a user now fires services/user.service.js's
+ * enrichZodiacFromBirthDetails in the background (see
+ * controllers/auth.controller.js), which geocodes the typed birth place and
+ * fetches astro_details through the exact same AstrologyAPI transport this
+ * suite would otherwise hit for real. Declared here (not inside the IIFE
+ * below) so both it and the top-level .catch can restore it. Restored right
+ * before mongoose.disconnect() at the very end.
+ */
+const originalRequest = astrologyApiClient.request;
+/**
+ * Stubbed the same way and for the same reason as astrologyApiClient.request
+ * above: /chats/ai/messages now calls services/assistant.service.js's
+ * generateReply for real, which calls this for real — this suite has no
+ * business making an actual Groq/OpenAI call (or needing LLM_PROVIDER
+ * configured at all) just to prove the HTTP plumbing around it works.
+ */
+const originalLlmChat = llm.chat;
+
 (async () => {
   await mongoose.connect(process.env.MONGODB_URI);
   await mongoose.connection.dropDatabase();
   await connectRedis();
   const stale = await redis.keys('*');
   if (stale.length) await redis.del(...stale.map(k => k.replace('shreeastro-test:', '')));
+
+  astrologyApiClient.request = async path => {
+    if (path === 'timezone_with_dst') return timezoneFixture;
+    if (path === 'astro_details') return astroDetailsFixture;
+    if (path === 'planets/extended') return planetsExtendedFixture;
+    if (path.startsWith('sun_sign_prediction/')) {
+      return {
+        status: true,
+        sun_sign: path.split('/').pop(),
+        prediction: {
+          personal_life: 'x', profession: 'x', health: 'x', emotions: 'x', travel: 'x',
+          luck: 'A steady day for confident, quiet progress.',
+        },
+      };
+    }
+    return geoDetailsFixture;
+  };
 
   const server = createApp().listen(PORT);
   const Admin = require('../models/Admin');
@@ -59,7 +120,7 @@ const DELETE = (p, o) => call('DELETE', p, o);
 
   const changed = await PATCH('/admin/settings', { token: adminToken, body: {
     commissionPercent: 30, minRecharge: 50, maxRecharge: 50000, minPayout: 500,
-    freeTrialMinutes: 5, payoutCycle: 'monthly',
+    payoutCycle: 'monthly',
     features: { aiAssistant: false } } });
   check('settings save', changed.body.settings?.minRecharge === 50, changed.body.settings);
   check('one switch changes without clearing the others',
@@ -120,6 +181,35 @@ const DELETE = (p, o) => call('DELETE', p, o);
   const afterRevoke = await POST('/auth/admin/login', { body: {
     email: 'finance@shreeastro.com', password: invited.body.temporaryPassword } });
   check('a revoked admin cannot sign in', afterRevoke.status === 403, afterRevoke.body);
+
+  /* ------------------------------------------------------ forgot password */
+  section('admin_panel — forgot password');
+  const unknownReset = await POST('/auth/admin/forgot-password', { body: { email: 'nobody@shreeastro.com' } });
+  check('an unknown email is answered the same shape as a real one — no way to learn who is an admin', unknownReset.status === 200 && unknownReset.body.requested === true, unknownReset.body);
+  check('and carries no devCode, since nothing was actually sent', unknownReset.body.devCode === undefined);
+
+  const resetRequest = await POST('/auth/admin/forgot-password', { body: { email: 'admin@shreeastro.com' } });
+  check('a real admin gets a code', resetRequest.status === 200 && typeof resetRequest.body.devCode === 'string', resetRequest.body);
+
+  const wrongCode = await POST('/auth/admin/reset-password', {
+    body: { email: 'admin@shreeastro.com', code: '000000', password: 'BrandNewPass1' } });
+  check('the wrong code is refused', wrongCode.status === 401, wrongCode.body);
+
+  const stillOldPassword = await POST('/auth/admin/login', {
+    body: { email: 'admin@shreeastro.com', password: 'SuperSecret123' } });
+  check('the old password still works after a refused reset attempt', stillOldPassword.status === 200, stillOldPassword.body);
+
+  const resetDone = await POST('/auth/admin/reset-password', {
+    body: { email: 'admin@shreeastro.com', code: resetRequest.body.devCode, password: 'BrandNewPass1' } });
+  check('the correct code resets the password', resetDone.status === 200 && resetDone.body.reset === true, resetDone.body);
+
+  const oldPasswordNowFails = await POST('/auth/admin/login', {
+    body: { email: 'admin@shreeastro.com', password: 'SuperSecret123' } });
+  check('the old password is refused once reset', oldPasswordNowFails.status === 401, oldPasswordNowFails.body);
+
+  const newPasswordWorks = await POST('/auth/admin/login', {
+    body: { email: 'admin@shreeastro.com', password: 'BrandNewPass1' } });
+  check('the new password signs in', newPasswordWorks.status === 200, newPasswordWorks.body);
 
   /* --------------------------------------------------------------- wallets */
   section('admin_panel — wallets');
@@ -184,7 +274,6 @@ const DELETE = (p, o) => call('DELETE', p, o);
   const chat = await POST('/chats', { token: userToken, body: {
     astrologerId, channel: 'chat', intake: { topic: 'career-job', question: 'Job change?' } } });
   await POST(`/chats/${chat.body.chatId}/accept`, { token: astroToken });
-  check('free minutes follow the new setting', chat.body.freeMinutes === 5, chat.body);
 
   const { ChatSession } = require('../models/Chat');
   await ChatSession.updateOne({ _id: chat.body.chatId }, { startedAt: new Date(Date.now() - 600000) });
@@ -213,11 +302,19 @@ const DELETE = (p, o) => call('DELETE', p, o);
 
   /* ---------------------------------------------------------------- user_app */
   section('user_app — home, horoscope and the AI assistant');
+  /** Registering above already kicked off the real Moon-sign enrichment in the background — wait for it rather than assuming the calls in between were enough. */
+  const enrichedProfile = await waitForZodiac(userId);
+  check('the Moon sign was resolved from the DOB+time+place on file (astro_details, faked)', enrichedProfile?.zodiac?.moonSign === 'Pisces');
+
   const home = await GET('/users/me/home', { token: userToken });
   check('the home screen comes back in one call', home.status === 200, Object.keys(home.body));
   check('it carries the wallet', home.body.wallet?.balance !== undefined);
-  check('and the planet positions', home.body.planetPositions?.planets?.length === 6);
+  /** All 9 classical grahas now — this used to be a 6-planet synthetic placeholder; see services/transitPlanets.service.js. */
+  check('and the planet positions', home.body.planetPositions?.planets?.length === 9);
   check('and the recent consultation', home.body.recentConsultations?.length === 1, home.body.recentConsultations);
+  /** The real Vedic Moon sign ("rashi") — profile.sunSign used to always be blank; see services/user.service.js. */
+  check('the rashi is the real Moon sign, not a Western Sun sign guess', home.body.profile?.moonSign === 'Pisces');
+  check('and a real horoscope reading for that Moon sign comes along with it', home.body.horoscope?.reading?.length > 0 && !!home.body.horoscope?.luckyNumber);
 
   const horoscope = await GET('/horoscope?sign=Leo');
   check('a horoscope reads without a token', horoscope.status === 200, horoscope.body);
@@ -229,9 +326,19 @@ const DELETE = (p, o) => call('DELETE', p, o);
 
   const ai = await GET('/chats/ai', { token: userToken });
   check('the AI thread opens with a greeting', ai.body.items?.[0]?.content?.text?.includes('Namaste'), ai.body.items?.[0]);
+
+  llm.chat = async messages => {
+    /** This user never generated a kundli (no /birth-profiles call anywhere in this suite) — proving the assistant says so plainly instead of answering as if it had a chart. */
+    check('the model is told plainly there is no chart yet, rather than being left to guess', messages[0]?.role === 'system' && messages[0]?.content.includes('No birth chart is on file'));
+    check('the user\'s own new question rides along as the newest turn, via getRecentMessages reading it straight back', messages.at(-1)?.role === 'user' && messages.at(-1)?.content === 'What does my Jupiter placement mean?');
+    return { type: 'text', text: 'I don\'t have your birth chart on file yet — generate your kundli from the Kundli tab and ask me again!' };
+  };
   const asked = await POST('/chats/ai/messages', { token: userToken, body: { text: 'What does my Jupiter placement mean?' } });
   check('asking returns both turns', asked.status === 201 && !!asked.body.question && !!asked.body.answer, asked.body);
   check('the answer is from the assistant', asked.body.answer?.senderRole === 'ai');
+  check('and is the (faked) model\'s real reply, not a canned stub', asked.body.answer?.content?.text === 'I don\'t have your birth chart on file yet — generate your kundli from the Kundli tab and ask me again!');
+  llm.chat = originalLlmChat;
+
   const reopened = await GET('/chats/ai', { token: userToken });
   check('the thread is kept, not recreated', reopened.body.chatId === ai.body.chatId && reopened.body.items.length === 3);
   const empty = await POST('/chats/ai/messages', { token: userToken, body: { text: '  ' } });
@@ -248,9 +355,17 @@ const DELETE = (p, o) => call('DELETE', p, o);
   check('and a signup split', Array.isArray(reports.body.signupSplit), reports.body.signupSplit);
   check('and the top astrologers', reports.body.topAstrologers?.[0]?.name === 'Pt. Rajesh Sharma', reports.body.topAstrologers);
 
+  astrologyApiClient.request = originalRequest;
+  llm.chat = originalLlmChat;
+
   console.log(`\n${pass} passed, ${fail} failed`);
   server.close();
   await mongoose.disconnect();
   await redis.quit();
   process.exit(fail ? 1 : 0);
-})().catch(e => { console.error('CRASHED:', e); process.exit(1); });
+})().catch(e => {
+  astrologyApiClient.request = originalRequest;
+  llm.chat = originalLlmChat;
+  console.error('CRASHED:', e);
+  process.exit(1);
+});

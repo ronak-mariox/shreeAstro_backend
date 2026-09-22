@@ -10,10 +10,16 @@ const express = require('express');
 
 const adminController = require('../controllers/admin.controller');
 const { adminOnly, requirePermission } = require('../middlewares/auth.middleware');
+const { uploadProfilePhoto } = require('../middlewares/upload.middleware');
 
 const router = express.Router();
 
 router.use(adminOnly);
+
+/* -------------------------------------------------------------------- me */
+
+/** Every signed-in admin, regardless of role, may change their own name/photo. */
+router.patch('/me', uploadProfilePhoto, adminController.updateOwnProfile);
 
 /* ------------------------------------------------------------- dashboard */
 
@@ -73,7 +79,7 @@ router.patch(
 );
 router.patch(
   '/astrologers/:astrologerId/price-changes/:requestId',
-  requirePermission('astrologers.manage'),
+  requirePermission('astrologers.approve'),
   adminController.reviewPriceChange,
 );
 
@@ -133,6 +139,34 @@ router.get('/reports', requirePermission('reports.view'), adminController.report
 
 router.get('/settings', requirePermission('settings.view'), adminController.getSettings);
 router.patch('/settings', requirePermission('settings.manage'), adminController.updateSettings);
+
+/* ------------------------------------------------------ third parties */
+
+router.get('/integrations', requirePermission('settings.view'), adminController.listIntegrations);
+router.put(
+  '/integrations/:provider',
+  requirePermission('settings.manage'),
+  adminController.saveIntegration,
+);
+router.patch(
+  '/integrations/:provider/enabled',
+  requirePermission('settings.manage'),
+  adminController.setIntegrationEnabled,
+);
+
+/** The "Other" list — anything not one of the six fixed providers above. */
+router.get('/third-parties', requirePermission('settings.view'), adminController.listThirdParties);
+router.post('/third-parties', requirePermission('settings.manage'), adminController.saveThirdParty);
+router.put(
+  '/third-parties/:thirdPartyId',
+  requirePermission('settings.manage'),
+  adminController.saveThirdParty,
+);
+router.delete(
+  '/third-parties/:thirdPartyId',
+  requirePermission('settings.manage'),
+  adminController.deleteThirdParty,
+);
 
 /* ----------------------------------------------------------- admin team */
 

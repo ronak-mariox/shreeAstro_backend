@@ -9,6 +9,7 @@ const mongoose = require('mongoose');
 const { connectRedis, redis } = require('../config/redis');
 const { createApp } = require('../app');
 const { hashPassword } = require('../utils/password');
+const astrologyApiClient = require('../services/astrologyApi.client');
 
 const PORT = 5099;
 const BASE = `http://127.0.0.1:${PORT}/api/v1`;
@@ -21,6 +22,16 @@ function check(label, condition, extra) {
   else { fail += 1; console.log(`  FAIL ${label}${extra ? ` -> ${JSON.stringify(extra)}` : ''}`); }
 }
 const section = title => console.log(`\n=== ${title} ===`);
+
+/**
+ * Registering a user now fires services/user.service.js's
+ * enrichZodiacFromBirthDetails in the background (see
+ * controllers/auth.controller.js), which would otherwise hit the real
+ * AstrologyAPI transport. This file doesn't assert on Moon sign / horoscope
+ * content, so an empty geo_details response is enough to make it a silent,
+ * free no-op (no place found -> nothing further is ever fetched).
+ */
+const originalAstrologyRequest = astrologyApiClient.request;
 
 async function call(method, path, { token, body } = {}) {
   const headers = {};
@@ -39,6 +50,8 @@ const PATCH = (p, o) => call('PATCH', p, o);
   await connectRedis();
   const keys = await redis.keys('*');
   if (keys.length) await redis.del(...keys.map(k => k.replace('shreeastro-test:', '')));
+
+  astrologyApiClient.request = async () => ({ geonames: [] });
 
   const server = createApp().listen(PORT);
 
@@ -123,7 +136,7 @@ const PATCH = (p, o) => call('PATCH', p, o);
     body: {
       commissionPercent: 25,
       services: [
-        { type: 'chat', ratePerMinute: 20, offerPercent: 0, freeMinutes: 0, isEnabled: true },
+        { type: 'chat', ratePerMinute: 20, offerPercent: 0, isEnabled: true },
         { type: 'call', ratePerMinute: 30, isEnabled: true },
       ],
     },
@@ -187,19 +200,9 @@ const PATCH = (p, o) => call('PATCH', p, o);
   check('the detail screen gets the about text', profile.body.astrologer?.about?.includes('18 years'), profile.body);
 
   /* ------------------------------------------------------------- wallet */
-  section('user_app — wallet and the free-consultation offer');
-  // A brand-new seeker has 3 free minutes, so an empty wallet is not a blocker.
-  const freeTry = await POST('/chats', { token: userToken, body: { astrologerId, channel: 'chat' } });
-  check('a first-timer can start on free minutes with ₹0', freeTry.status === 201, freeTry.body);
-  check('the free minutes are recorded on the session', freeTry.body.freeMinutes === 3, freeTry.body);
-  await POST(`/chats/${freeTry.body.chatId}/cancel`, { token: userToken });
-
-  // Spend the offer, and the balance check becomes the gate.
-  const UserModel = require('../models/User');
-  await UserModel.updateOne({ _id: userId }, { 'freeConsultation.isUsed': true });
-
+  section('user_app — wallet — every consultation is paid from minute 1');
   const noMoney = await POST('/chats', { token: userToken, body: { astrologerId, channel: 'chat' } });
-  check('once the offer is spent, ₹0 is refused', noMoney.status === 400, noMoney.body);
+  check('a first-timer with ₹0 is refused', noMoney.status === 400, noMoney.body);
 
   const order = await POST('/wallet/topup', { token: userToken, body: { amount: 500 } });
   check('a top-up starts', order.status === 201, order.body);
@@ -225,7 +228,6 @@ const PATCH = (p, o) => call('PATCH', p, o);
   check('the chat request is made', requested.status === 201, requested.body);
   const chatId = requested.body.chatId;
   check('the rate is fixed at request time', requested.body.ratePerMinute === 20);
-  check('no free minutes remain', requested.body.freeMinutes === 0, requested.body);
 
   const queue = await GET('/astrologer/me/requests', { token: astroToken });
   check('the request reaches the astrologer queue', queue.body.items?.length === 1, queue.body);
@@ -279,7 +281,9 @@ const PATCH = (p, o) => call('PATCH', p, o);
   check('the astrologer is credited', earnings.body.earnings.balance === 150, earnings.body);
 
   const ledger = await GET('/wallet/transactions?filter=spent', { token: userToken });
-  check('the charge appears in the ledger', ledger.body.items?.[0]?.amount === 200, ledger.body.items?.[0]);
+  // Per-minute billing writes one ₹20 debit per minute (minute 1 at accept, minutes 2-10 trued up at end) — not one lump-sum ₹200 entry.
+  check('10 separate per-minute charges appear in the ledger', ledger.body.items?.length === 10, ledger.body.items);
+  check('they sum to the full ₹200 charged', ledger.body.items?.reduce((sum, item) => sum + item.amount, 0) === 200, ledger.body.items);
 
   const endAgain = await POST(`/chats/${chatId}/end`, { token: userToken });
   check('a chat cannot be ended twice', endAgain.status === 400, endAgain.body);
@@ -360,10 +364,16 @@ const PATCH = (p, o) => call('PATCH', p, o);
   const userAsAdmin = await GET('/admin/dashboard', { token: userToken });
   check('a user token cannot reach the panel', userAsAdmin.status === 403, userAsAdmin.body);
 
+  astrologyApiClient.request = originalAstrologyRequest;
+
   console.log(`\n${pass} passed, ${fail} failed`);
 
   server.close();
   await mongoose.disconnect();
   await redis.quit();
   process.exit(fail ? 1 : 0);
-})().catch(e => { console.error('CRASHED:', e); process.exit(1); });
+})().catch(e => {
+  astrologyApiClient.request = originalAstrologyRequest;
+  console.error('CRASHED:', e);
+  process.exit(1);
+});

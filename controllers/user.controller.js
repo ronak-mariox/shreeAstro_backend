@@ -9,6 +9,7 @@
 const userService = require('../services/user.service');
 const notificationService = require('../services/notification.service');
 const horoscopeService = require('../services/horoscope.service');
+const { currentPlanetPositions } = require('../services/transitPlanets.service');
 const supportService = require('../services/support.service');
 const settingsService = require('../services/settings.service');
 const asyncHandler = require('../utils/asyncHandler');
@@ -28,6 +29,20 @@ const updateProfile = asyncHandler(async (req, res) => {
      */
     ...(req.uploadedPhotoUrl ? { photoUrl: req.uploadedPhotoUrl } : {}),
   });
+
+  /**
+   * A changed dob/time/place invalidates the cached zodiac (sunSign/moonSign/
+   * ascendant/nakshatra) computed once at registration — recompute it the
+   * same fire-and-forget way registration itself does (auth.controller.js),
+   * after the response that actually mattered has already gone out.
+   * enrichZodiacFromBirthDetails re-reads whatever's on file now and derives
+   * a fresh birthHash from it, so a changed birth naturally misses the old
+   * cache entry rather than needing an explicit invalidation step.
+   */
+  if (req.body.dateOfBirth || req.body.timeOfBirth || req.body.placeOfBirth) {
+    userService.enrichZodiacFromBirthDetails(req.account.accountId).catch(() => {});
+  }
+
   return res.json({ user });
 });
 
@@ -108,11 +123,11 @@ const horoscope = asyncHandler(async (req, res) => {
   const { sign } = req.query;
 
   if (sign) {
-    return res.json({ horoscope: horoscopeService.dailyFor(sign) });
+    return res.json({ horoscope: await horoscopeService.dailyFor(sign) });
   }
   return res.json({
-    items: horoscopeService.dailyForAll(),
-    planetPositions: horoscopeService.planetPositions(),
+    items: await horoscopeService.dailyForAll(),
+    planetPositions: await currentPlanetPositions(),
   });
 });
 

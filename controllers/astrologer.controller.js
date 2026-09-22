@@ -156,6 +156,23 @@ const deleteDocument = asyncHandler(async (req, res) => {
   return res.json({ items });
 });
 
+/** GET /api/v1/astrologer/me/gallery */
+const listGallery = asyncHandler(async (req, res) => {
+  return res.json({ items: await astrologerService.listGalleryImages(req.account.accountId) });
+});
+
+/** POST /api/v1/astrologer/me/gallery */
+const addGalleryImage = asyncHandler(async (req, res) => {
+  const items = await astrologerService.addGalleryImage(req.account.accountId, req.uploadedFile);
+  return res.status(201).json({ items });
+});
+
+/** DELETE /api/v1/astrologer/me/gallery/:imageId */
+const deleteGalleryImage = asyncHandler(async (req, res) => {
+  const items = await astrologerService.deleteGalleryImage(req.account.accountId, req.params.imageId);
+  return res.json({ items });
+});
+
 /** GET /api/v1/astrologer/me/bank-accounts */
 const listBankAccounts = asyncHandler(async (req, res) => {
   return res.json({ items: await astrologerService.listBankAccounts(req.account.accountId) });
@@ -238,6 +255,9 @@ module.exports = {
   listDocuments,
   addDocument,
   deleteDocument,
+  listGallery,
+  addGalleryImage,
+  deleteGalleryImage,
   listBankAccounts,
   addBankAccount,
   submitApplication,

@@ -670,10 +670,10 @@
                 "approve"
               ]
             },
-            "description": "The decision that puts an astrologer into the seeker's directory.\n\nIt also **mints their astro code** and **sets their opening rates** \u2014 without at least one service they cannot take work, so send the services here.\n\n`ratePerMinute` is the list price and `offerPercent` is the discount struck through it. `freeMinutes` is what a first-time seeker gets free. Needs `astrologers.approve`.",
+            "description": "The decision that puts an astrologer into the seeker's directory.\n\nIt also **mints their astro code** and **sets their opening rates** \u2014 without at least one service they cannot take work, so send the services here.\n\n`ratePerMinute` is the list price and `offerPercent` is the discount struck through it. Needs `astrologers.approve`.",
             "body": {
               "mode": "raw",
-              "raw": "{\n  \"commissionPercent\": 25,\n  \"services\": [\n    {\n      \"type\": \"chat\",\n      \"ratePerMinute\": 20,\n      \"offerPercent\": 0,\n      \"freeMinutes\": 3,\n      \"isEnabled\": true\n    },\n    {\n      \"type\": \"call\",\n      \"ratePerMinute\": 30,\n      \"offerPercent\": 0,\n      \"isEnabled\": true\n    }\n  ]\n}",
+              "raw": "{\n  \"commissionPercent\": 25,\n  \"services\": [\n    {\n      \"type\": \"chat\",\n      \"ratePerMinute\": 20,\n      \"offerPercent\": 0,\n      \"isEnabled\": true\n    },\n    {\n      \"type\": \"call\",\n      \"ratePerMinute\": 30,\n      \"offerPercent\": 0,\n      \"isEnabled\": true\n    }\n  ]\n}",
               "options": {
                 "raw": {
                   "language": "json"
@@ -1494,10 +1494,10 @@
                 "settings"
               ]
             },
-            "description": "Send only what changed. `features` and `appVersions` merge one key at a time, so sending a single switch does not clear the rest.\n\nThese are live: the recharge limits govern the very next top-up, and `freeTrialMinutes` the very next consultation. Needs `settings.manage`.",
+            "description": "Send only what changed. `features` and `appVersions` merge one key at a time, so sending a single switch does not clear the rest.\n\nThese are live: the recharge limits govern the very next top-up. Needs `settings.manage`.",
             "body": {
               "mode": "raw",
-              "raw": "{\n  \"commissionPercent\": 30,\n  \"minRecharge\": 50,\n  \"maxRecharge\": 50000,\n  \"minPayout\": 500,\n  \"freeTrialMinutes\": 5,\n  \"payoutCycle\": \"monthly\",\n  \"features\": {\n    \"aiAssistant\": true,\n    \"voiceConsultations\": true,\n    \"registrationsOpen\": true,\n    \"maintenanceMode\": false\n  }\n}",
+              "raw": "{\n  \"commissionPercent\": 30,\n  \"minRecharge\": 50,\n  \"maxRecharge\": 50000,\n  \"minPayout\": 500,\n  \"payoutCycle\": \"monthly\",\n  \"features\": {\n    \"aiAssistant\": true,\n    \"voiceConsultations\": true,\n    \"registrationsOpen\": true,\n    \"maintenanceMode\": false\n  }\n}",
               "options": {
                 "raw": {
                   "language": "json"

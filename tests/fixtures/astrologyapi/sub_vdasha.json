@@ -1,0 +1,56 @@
+[
+  {
+    "planet": "Venus",
+    "planet_id": 5,
+    "start": "25-10-2011  2:43",
+    "end": "23-2-2015  14:43"
+  },
+  {
+    "planet": "Sun",
+    "planet_id": 0,
+    "start": "23-2-2015  14:43",
+    "end": "23-2-2016  20:43"
+  },
+  {
+    "planet": "Moon",
+    "planet_id": 1,
+    "start": "23-2-2016  20:43",
+    "end": "24-10-2017  14:43"
+  },
+  {
+    "planet": "Mars",
+    "planet_id": 2,
+    "start": "24-10-2017  14:43",
+    "end": "24-12-2018  17:43"
+  },
+  {
+    "planet": "Rahu",
+    "planet_id": 7,
+    "start": "24-12-2018  17:43",
+    "end": "24-12-2021  11:43"
+  },
+  {
+    "planet": "Jupiter",
+    "planet_id": 4,
+    "start": "24-12-2021  11:43",
+    "end": "24-8-2024  11:43"
+  },
+  {
+    "planet": "Saturn",
+    "planet_id": 6,
+    "start": "24-8-2024  11:43",
+    "end": "25-10-2027  2:43"
+  },
+  {
+    "planet": "Mercury",
+    "planet_id": 3,
+    "start": "25-10-2027  2:43",
+    "end": "24-8-2030  23:43"
+  },
+  {
+    "planet": "Ketu",
+    "planet_id": 8,
+    "start": "24-8-2030  23:43",
+    "end": "25-10-2031  2:43"
+  }
+]

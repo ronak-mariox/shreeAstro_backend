@@ -44,6 +44,13 @@ const UPLOAD_DIR = process.env.VERCEL ? '/tmp/uploads' : 'uploads';
 /** Largest image an upload may be, in megabytes. */
 const MAX_UPLOAD_MB = 5;
 
+/**
+ * The one ephemeris provider KundliCache/ApiUsage rows are stamped with today.
+ * A literal, not a per-deployment secret — swapping providers is a code
+ * change, not a config one.
+ */
+const ASTROLOGY_API_PROVIDER = 'astrologyapi';
+
 module.exports = {
   JWT_EXPIRES_IN,
   JWT_REFRESH_EXPIRES_IN,
@@ -56,4 +63,5 @@ module.exports = {
   COOKIE_SECURE,
   UPLOAD_DIR,
   MAX_UPLOAD_MB,
+  ASTROLOGY_API_PROVIDER,
 };

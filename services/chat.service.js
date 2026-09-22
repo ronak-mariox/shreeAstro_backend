@@ -15,16 +15,41 @@
  * file, and the REST routes call the very same functions.
  */
 
+const mongoose = require('mongoose');
+
 const User = require('../models/User');
 const Astrologer = require('../models/Astrologer');
 const { ChatSession, Message, CHAT_EVENTS, roomFor } = require('../models/Chat');
+const ChatBillingTick = require('../models/ChatBillingTick');
 const ApiError = require('../utils/ApiError');
+const env = require('../config/env');
 const walletService = require('./wallet.service');
 const notificationService = require('./notification.service');
-const settingsService = require('./settings.service');
+const assistantService = require('./assistant.service');
+const { parseBirthDate, parseBirthTime } = require('./auth.service');
+const { minutesFor } = require('../utils/billing');
+const { estimateTokens } = require('../utils/tokens');
 
-/** How long an unanswered request stays open, in seconds. */
-const REQUEST_TIMEOUT_SECONDS = 120;
+const MONGO_DUPLICATE_KEY = 11000;
+
+/** How long an unanswered request stays open, in seconds — config/env.js's `consultation.astrologerJoinTimeoutSeconds`. */
+const REQUEST_TIMEOUT_SECONDS = env.consultation.astrologerJoinTimeoutSeconds;
+/** A session may not start unless the seeker can afford at least this many minutes — pay-as-you-go billing only needs enough for the one minute charged upfront on accept. config/env.js's `consultation.minBalanceMinutes`. */
+const MIN_SESSION_MINUTES = env.consultation.minBalanceMinutes;
+/** "1 minute", "3 minutes" — never "1 minutes". */
+const pluralMinutes = (count) => `${count} minute${count === 1 ? '' : 's'}`;
+/** How often a session's meter turns — services/chat.service.js's runBillingSweep bills whichever active sessions are at least this overdue; see jobs/chatBilling.job.js for the real scheduler. Not itself a tunable — a "minute" is what "per-minute billing" means. */
+const TICK_INTERVAL_MS = 60 * 1000;
+/** Below this many minutes still affordable, the seeker is warned once (not on every tick) so they can top up before being cut off. */
+const LOW_BALANCE_WARNING_MINUTES = 2;
+/**
+ * More than this much of a gap since the session's last successful tick means
+ * the job (or the whole server) was down, not just running a little late —
+ * end the session rather than silently charging a large catch-up amount the
+ * seeker never agreed to and may not even have the balance for. Not itself a
+ * tunable — this is crash-recovery slack, not a billing-behaviour knob.
+ */
+const MAX_TICK_GAP_MS = 5 * 60 * 1000;
 
 /**
  * Emits to a room if the socket server is running.
@@ -37,7 +62,10 @@ function emit(target, event, payload) {
     const { getIO } = require('../socket');
     getIO().to(target).emit(event, payload);
   } catch (error) {
-    /** No socket server (a script or a test); the database is still correct. */
+    /** No socket server (a script or a test) is the expected case; anything else here is why a live push silently never arrived. */
+    if (error?.message !== 'Socket.io is not initialised yet.') {
+      console.error(`[chat.service] emit(${event}) to ${target} failed:`, error);
+    }
   }
 }
 
@@ -72,10 +100,53 @@ async function participantChat(chatId, accountId) {
 /* -------------------------------------------------------------------------- */
 
 /**
+ * How many minutes of `channel` this seeker could start right now with this
+ * astrologer — purely what the wallet covers at the current rate; this
+ * platform has no free minutes of any kind. Shared by requestChat and
+ * precheckSession so a client is never told "you can start" by one and then
+ * refused by the other.
+ */
+async function affordabilityFor(user, astrologer, channel) {
+  const ratePerMinute = astrologer.rateFor(channel);
+  const affordablePaidMinutes = ratePerMinute > 0 ? Math.floor(user.wallet.balance / ratePerMinute) : Infinity;
+
+  return {
+    ratePerMinute,
+    affordablePaidMinutes,
+    totalAffordableMinutes: affordablePaidMinutes,
+  };
+}
+
+/**
+ * The intake form sends birth details in whatever display format its own
+ * picker produces ("15 August 1999", "10 : 30 PM") — the same shapes
+ * registerUser/saveKundli already normalise for the profile and kundli
+ * endpoints (see parseBirthDate/parseBirthTime in services/auth.service.js).
+ * Chat's own birthDetailsSchema (models/common.js) is strict about both, so
+ * this has to happen before it ever reaches ChatSession.create. Anything not
+ * supplied is left alone — the schema itself decides what is required.
+ */
+function normalizeIntakeBirthDetails(birthDetails) {
+  if (!birthDetails) {
+    return birthDetails;
+  }
+  try {
+    return {
+      ...birthDetails,
+      dateOfBirth: birthDetails.dateOfBirth ? parseBirthDate(birthDetails.dateOfBirth) : birthDetails.dateOfBirth,
+      timeOfBirth: birthDetails.timeOfBirth ? parseBirthTime(birthDetails.timeOfBirth) : birthDetails.timeOfBirth,
+    };
+  } catch {
+    throw ApiError.badRequest('Could not read the birth details on this request.', undefined);
+  }
+}
+
+/**
  * The seeker asks an astrologer for a chat.
  *
- * Checks in order: the astrologer can take work, the seeker can afford at least
- * a minute, and there is not already a request in flight between these two.
+ * Checks in order: the astrologer can take work, the seeker can afford the
+ * MIN_SESSION_MINUTES the meter will charge upfront, and there is not
+ * already a request in flight between these two.
  */
 async function requestChat({ userId, astrologerId, channel = 'chat', intake = {} }) {
   const astrologer = await Astrologer.findById(astrologerId);
@@ -91,23 +162,15 @@ async function requestChat({ userId, astrologerId, channel = 'chat', intake = {}
     throw ApiError.notFound('Account not found.');
   }
 
-  const ratePerMinute = astrologer.rateFor(channel);
+  const { ratePerMinute, totalAffordableMinutes } = await affordabilityFor(user, astrologer, channel);
 
-  /**
-   * Free minutes come from two places: the platform's one-off first-consult
-   * offer, and whatever this astrologer grants. The seeker gets the larger.
-   */
-  const settings = await settingsService.get();
-  const service = astrologer.services.find(entry => entry.type === channel);
-  /** The platform's offer is whatever the panel currently says it is. */
-  const platformFree = user.freeConsultation.isUsed ? 0 : settings.freeTrialMinutes;
-  const freeMinutes = Math.max(platformFree, service?.freeMinutes || 0);
-
-  /** Nothing free and nothing in the wallet means the chat cannot start. */
-  if (freeMinutes === 0 && user.wallet.balance < ratePerMinute) {
+  /** Less than MIN_SESSION_MINUTES affordable means the wallet can't even cover the minute billed upfront on accept. */
+  if (totalAffordableMinutes < MIN_SESSION_MINUTES) {
+    const minutesShort = MIN_SESSION_MINUTES - totalAffordableMinutes;
     throw ApiError.badRequest(
-      `You need at least ₹${ratePerMinute} in your wallet to start this chat.`,
+      `You need at least ₹${minutesShort * ratePerMinute} more in your wallet to start this chat (minimum ${pluralMinutes(MIN_SESSION_MINUTES)}).`,
       undefined,
+      'insufficient_balance',
     );
   }
 
@@ -127,17 +190,33 @@ async function requestChat({ userId, astrologerId, channel = 'chat', intake = {}
     astrologer: astrologerId,
     status: 'requested',
     intake: {
-      birthDetails: intake.birthDetails,
+      birthDetails: normalizeIntakeBirthDetails(intake.birthDetails),
       topic: intake.topic,
       question: intake.question,
       minutesBooked: intake.minutes,
     },
     billing: {
       ratePerMinute,
-      freeMinutes,
       commissionPercent: astrologer.commissionPercent,
     },
   });
+
+  /**
+   * The seeker's own filled-in intake, posted as the opening message of the
+   * transcript itself — not just a popup the astrologer sees once and loses,
+   * so it is there on both sides for the whole life of the chat, exactly as
+   * the seeker's own screen shows it before the astrologer has even answered.
+   */
+  if (intake.summary) {
+    await Message.send({
+      chatId: chat._id,
+      senderId: userId,
+      senderRole: 'user',
+      type: 'text',
+      content: { text: intake.summary },
+      isIntake: true,
+    });
+  }
 
   /** Every request counts towards the acceptance rate, answered or not. */
   await Astrologer.updateOne({ _id: astrologerId }, { $inc: { 'metrics.requestsReceived': 1 } });
@@ -165,7 +244,41 @@ async function requestChat({ userId, astrologerId, channel = 'chat', intake = {}
 }
 
 /**
- * The astrologer takes the request. The meter starts here.
+ * Read-only balance check before requesting — creates nothing, so the client
+ * can show "you need more balance" (and an add-money button) without
+ * spending anything. Mirrors requestChat's own eligibility check exactly.
+ */
+async function precheckSession({ userId, astrologerId, channel = 'chat' }) {
+  const astrologer = await Astrologer.findById(astrologerId);
+  if (!astrologer) {
+    throw ApiError.notFound('That astrologer is not available.');
+  }
+
+  const user = await User.findById(userId);
+  if (!user) {
+    throw ApiError.notFound('Account not found.');
+  }
+
+  const { ratePerMinute, totalAffordableMinutes } = await affordabilityFor(user, astrologer, channel);
+  const astrologerAvailable = astrologer.canAcceptRequest(channel);
+
+  return {
+    ok: astrologerAvailable && totalAffordableMinutes >= MIN_SESSION_MINUTES,
+    astrologerAvailable,
+    ratePerMinute,
+    minSessionMinutes: MIN_SESSION_MINUTES,
+    minutesAffordable: totalAffordableMinutes,
+    shortfallAmount: Math.max(0, (MIN_SESSION_MINUTES - totalAffordableMinutes) * ratePerMinute),
+  };
+}
+
+/**
+ * The astrologer takes the request. The meter starts here — the first minute
+ * is billed upfront, before the session goes active, so a seeker cannot
+ * connect and disconnect for free and cost the astrologer their time. If
+ * even the first minute can no longer be afforded (the wallet was spent
+ * elsewhere while the request sat waiting), the request is left exactly as
+ * it was rather than starting a session that cannot pay for itself.
  */
 async function acceptChat({ chatId, astrologerId }) {
   const chat = await ChatSession.findOne({ _id: chatId, astrologer: astrologerId });
@@ -176,9 +289,38 @@ async function acceptChat({ chatId, astrologerId }) {
     throw ApiError.badRequest(`This request is already ${chat.status}.`);
   }
 
-  chat.status = 'active';
-  chat.startedAt = new Date();
-  await chat.save();
+  /**
+   * The minute-1 debit and the session actually going active live in one
+   * transaction — a crash between the two must never leave the seeker
+   * charged for a chat that never started (or, the other way round, a chat
+   * marked active that nobody ever paid the astrologer for).
+   */
+  const now = new Date();
+  const session = await mongoose.startSession();
+  let firstMinute;
+  try {
+    await session.withTransaction(async () => {
+      firstMinute = await billOneMinute(chat, now, session);
+      if (!firstMinute.billed) {
+        return;
+      }
+      chat.status = 'active';
+      chat.startedAt = now;
+      await chat.save({ session });
+    });
+  } catch (error) {
+    if (error instanceof AbortBilling) {
+      firstMinute = error.outcome;
+    } else {
+      throw error;
+    }
+  } finally {
+    await session.endSession();
+  }
+
+  if (!firstMinute.billed) {
+    throw ApiError.badRequest('The seeker no longer has enough balance to start this chat.');
+  }
 
   await Astrologer.updateOne(
     { _id: astrologerId },
@@ -195,7 +337,6 @@ async function acceptChat({ chatId, astrologerId }) {
     chatId: String(chat._id),
     startedAt: chat.startedAt,
     ratePerMinute: chat.billing.ratePerMinute,
-    freeMinutes: chat.billing.freeMinutes,
   });
   emit(`user:${chat.user}`, 'chat:accepted', { chatId: String(chat._id) });
 
@@ -255,19 +396,561 @@ async function cancelChat({ chatId, userId }) {
 }
 
 /* -------------------------------------------------------------------------- */
+/* Live billing tick                                                          */
+/* -------------------------------------------------------------------------- */
+
+/** The seeker's current wallet balance, read fresh — the one number every low-balance/tick signal reports back. */
+async function balanceFor(userId, session) {
+  const query = User.findById(userId).select('wallet.balance');
+  const user = await (session ? query.session(session) : query);
+  return user.wallet.balance;
+}
+
+/**
+ * How many more minutes of an ACTIVE session's own frozen rate the seeker's
+ * current wallet balance covers. Shared by the tick's own low-balance check
+ * and getSessionState (what a client polls/loads-on-reconnect to know where
+ * the meter stands) — the client is never trusted to compute this itself.
+ */
+async function remainingMinutesFor(chat) {
+  const user = await User.findById(chat.user).select('wallet');
+  return chat.billing.ratePerMinute > 0 ? Math.floor(user.wallet.balance / chat.billing.ratePerMinute) : Infinity;
+}
+
+/**
+ * Whether the seeker could pay for the *one specific* minute coming up next
+ * — the wallet covering the frozen rate — read without changing anything.
+ * This is the check-ahead phase's own question
+ * (`env.consultation.checkAheadSeconds` before the current minute is due):
+ * not "how much runway is left" (that's `remainingMinutesFor`,
+ * `LOW_BALANCE_WARNING_MINUTES`'s own concern), but "will the debit at the
+ * actual due time succeed if nothing changes."
+ */
+async function canAffordNextMinute(chat) {
+  const balance = await balanceFor(chat.user);
+  return { affordable: balance >= chat.billing.ratePerMinute, balance };
+}
+
+/**
+ * Thrown from inside {@link billOneMinute} to force the Mongo transaction
+ * wrapped around it to abort — never a real error, just the only way to make
+ * `session.withTransaction()` roll back a write it already made (the debit)
+ * once a *later* step in the same minute turns out to be a duplicate. See
+ * the call sites below for how it's turned back into a plain `{ billed:
+ * false, ... }` result rather than escaping as an exception.
+ */
+class AbortBilling extends Error {
+  constructor(outcome) {
+    super('billing aborted — not a real error, see AbortBilling.outcome');
+    this.outcome = outcome;
+  }
+}
+
+/**
+ * The actual work of billing one minute — every write in it takes `session`,
+ * so a caller can either let it run in its own transaction ({@link
+ * billNextMinute}) or fold it into a larger one (acceptChat, which also
+ * needs the session to go active in the very same all-or-nothing unit as
+ * the minute-1 debit that pays for it).
+ *
+ * Idempotent: a duplicate call for the same minute (a racing sweep, a retry
+ * after a crash) is caught by ChatBillingTick's unique index on
+ * (chatSession, minuteNumber) — since the debit above it lives in the same
+ * transaction, throwing here aborts it too, so a minute is never charged
+ * without the tick that proves it, or the other way round.
+ */
+async function billOneMinute(chat, now, session) {
+  const minuteNumber = chat.minutesBilled + 1;
+  const amount = chat.billing.ratePerMinute;
+
+  let walletTransactionId;
+  /** Reported back so the tick's own socket event can push the new balance straight to the client — no separate fetch for it to make. */
+  let balanceRemaining;
+  if (amount > 0) {
+    try {
+      const txn = await walletService.post({
+        ownerRole: 'user',
+        ownerId: chat.user,
+        direction: 'debit',
+        type: 'consultation_charge',
+        amount,
+        title: `${chat.channel === 'call' ? 'Call' : 'Chat'} consultation — minute ${minuteNumber}`,
+        chatSession: chat._id,
+        session,
+      });
+      walletTransactionId = txn._id;
+      balanceRemaining = txn.balanceAfter;
+    } catch (error) {
+      if (error instanceof ApiError) {
+        /** Nothing was written — safe to just say so; the transaction commits empty. */
+        return { billed: false, reason: 'insufficient_balance' };
+      }
+      throw error;
+    }
+  } else {
+    /** A zero-rate chat (the AI thread type, never a real consultation) moves no money, but the client still needs a number to show — read it as-is. */
+    balanceRemaining = await balanceFor(chat.user, session);
+  }
+
+  try {
+    await ChatBillingTick.create(
+      [{ chatSession: chat._id, minuteNumber, amount, walletTransaction: walletTransactionId, billedAt: now }],
+      { session },
+    );
+  } catch (error) {
+    if (error?.code === MONGO_DUPLICATE_KEY) {
+      /** Someone else already billed this exact minute — abort so the debit just taken above never commits, rather than double-charge and have to reverse it after the fact. */
+      throw new AbortBilling({ billed: false, reason: 'already_billed' });
+    }
+    throw error;
+  }
+
+  let earning = 0;
+  if (amount > 0) {
+    const commission = Math.round((amount * chat.billing.commissionPercent) / 100);
+    earning = amount - commission;
+    if (earning > 0) {
+      await walletService.post({
+        ownerRole: 'astrologer',
+        ownerId: chat.astrologer,
+        direction: 'credit',
+        type: 'consultation_earning',
+        amount: earning,
+        title: `${chat.channel === 'call' ? 'Call' : 'Chat'} consultation — minute ${minuteNumber}`,
+        chatSession: chat._id,
+        session,
+      });
+    }
+  }
+
+  await ChatSession.updateOne(
+    { _id: chat._id },
+    {
+      $inc: {
+        minutesBilled: 1,
+        'billing.amountCharged': amount,
+        'billing.astrologerEarning': earning,
+      },
+      $set: { lastBilledAt: now, balanceExhaustedAt: null, nextMinuteChecked: false },
+    },
+    { session },
+  );
+  /** Kept in sync in memory too, so a caller chaining more logic off the same object (endChat's true-up loop, a test) sees the update without a re-fetch. */
+  chat.minutesBilled += 1;
+  chat.billing.amountCharged += amount;
+  chat.billing.astrologerEarning += earning;
+  chat.lastBilledAt = now;
+  chat.balanceExhaustedAt = null;
+  chat.nextMinuteChecked = false;
+
+  return { billed: true, minuteNumber, amount, balanceRemaining };
+}
+
+/**
+ * Bills exactly the next unbilled minute for a session, free or paid, in its
+ * own atomic transaction: the debit, the idempotency tick, the astrologer's
+ * earning, and the session's own running totals either all land or none do.
+ *
+ * @returns {Promise<{billed: true, minuteNumber: number, amount: number} | {billed: false, reason: 'insufficient_balance'|'already_billed'}>}
+ */
+async function billNextMinute(chat, now = new Date()) {
+  const session = await mongoose.startSession();
+  let outcome;
+  try {
+    await session.withTransaction(async () => {
+      outcome = await billOneMinute(chat, now, session);
+    });
+  } catch (error) {
+    if (error instanceof AbortBilling) {
+      outcome = error.outcome;
+    } else {
+      throw error;
+    }
+  } finally {
+    await session.endSession();
+  }
+  return outcome;
+}
+
+/**
+ * One active session's turn at the tick: bills its next minute if due,
+ * proactively warns once when barely anything is left, starts (or checks) a
+ * grace period once nothing more can be afforded, and force-ends a session
+ * whose last tick is impossibly old (the job, or the whole server, was down
+ * — not just running a little late) rather than charging a large silent
+ * catch-up the seeker never agreed to.
+ *
+ * Before any of that, a session not yet due for its next minute gets one
+ * more chance to be looked at: the check-ahead phase, `checkAheadSeconds`
+ * before the actual due time, asks whether the debit that will be attempted
+ * *then* would succeed right now — and if not, warns immediately rather than
+ * waiting for the real cutoff to surprise the seeker. This is deliberately a
+ * warning only; the due-time debit below is still what actually decides
+ * anything; a top-up in between just makes that debit succeed normally.
+ */
+async function tickOneSession(chat, now) {
+  /**
+   * Paused indefinitely for insufficient balance — never re-enter the normal
+   * due/gap math below, or a long-paused session reads as a crash-recovery
+   * timeout (`MAX_TICK_GAP_MS`) instead of staying paused. Only
+   * resumePausedSessionsForUser clears this.
+   */
+  if (chat.balanceExhaustedAt) {
+    return { chatId: String(chat._id), action: 'balance_paused' };
+  }
+
+  const since = chat.lastBilledAt ?? chat.startedAt;
+  const dueAt = new Date(since.getTime() + TICK_INTERVAL_MS);
+
+  if (now < dueAt) {
+    const checkAheadAt = new Date(dueAt.getTime() - env.consultation.checkAheadSeconds * 1000);
+    if (now < checkAheadAt || chat.nextMinuteChecked) {
+      return { chatId: String(chat._id), action: 'not_due' };
+    }
+
+    const { affordable, balance } = await canAffordNextMinute(chat);
+    chat.nextMinuteChecked = true;
+    await ChatSession.updateOne({ _id: chat._id }, { $set: { nextMinuteChecked: true } });
+
+    if (!affordable) {
+      emit(roomFor(chat._id), CHAT_EVENTS.LOW_BALANCE, {
+        chatId: String(chat._id),
+        exhausted: false,
+        secondsUntilCut: Math.max(0, Math.round((dueAt.getTime() - now.getTime()) / 1000)),
+        requiredAmount: chat.billing.ratePerMinute,
+        balanceRemaining: balance,
+      });
+      return { chatId: String(chat._id), action: 'check_ahead_warned' };
+    }
+    return { chatId: String(chat._id), action: 'check_ahead_ok' };
+  }
+
+  const gapMs = now.getTime() - since.getTime();
+  if (gapMs > MAX_TICK_GAP_MS) {
+    await endChat({ chatId: chat._id, accountId: chat.astrologer, endedBy: 'system', reason: 'timeout' });
+    return { chatId: String(chat._id), action: 'ended_timeout' };
+  }
+
+  const result = await billNextMinute(chat, now);
+
+  if (!result.billed) {
+    if (result.reason === 'already_billed') {
+      return { chatId: String(chat._id), action: 'already_billed' };
+    }
+
+    /**
+     * insufficient_balance — pause indefinitely rather than end the session.
+     * Nothing here times out: `runBillingSweep` skips a paused session
+     * entirely (see its own `balanceExhaustedAt` check), so no further minute
+     * is ever attempted until `resumePausedSessionsForUser` explicitly clears
+     * this — which only a wallet top-up ever calls (wallet.controller.js's
+     * confirmTopUp). The seeker can leave this paused as long as they like;
+     * only they (ending the chat themselves) or the astrologer can close it
+     * from here.
+     */
+    if (!chat.balanceExhaustedAt) {
+      chat.balanceExhaustedAt = now;
+      await ChatSession.updateOne({ _id: chat._id }, { $set: { balanceExhaustedAt: now } });
+      emit(roomFor(chat._id), CHAT_EVENTS.LOW_BALANCE, {
+        chatId: String(chat._id),
+        exhausted: true,
+        paused: true,
+        balanceRemaining: await balanceFor(chat.user),
+      });
+    }
+    return { chatId: String(chat._id), action: 'balance_paused' };
+  }
+
+  /** Billed fine — proactively warn once if what's left won't cover much more. */
+  const minutesRemaining = await remainingMinutesFor(chat);
+
+  if (minutesRemaining < LOW_BALANCE_WARNING_MINUTES && !chat.lowBalanceWarnedAt) {
+    chat.lowBalanceWarnedAt = now;
+    await ChatSession.updateOne({ _id: chat._id }, { $set: { lowBalanceWarnedAt: now } });
+    emit(roomFor(chat._id), CHAT_EVENTS.LOW_BALANCE, {
+      chatId: String(chat._id),
+      exhausted: false,
+      minutesRemaining,
+      balanceRemaining: result.balanceRemaining,
+    });
+  }
+
+  emit(roomFor(chat._id), CHAT_EVENTS.TICK, {
+    chatId: String(chat._id),
+    minutesBilled: chat.minutesBilled,
+    minutesRemaining,
+    balanceRemaining: result.balanceRemaining,
+  });
+
+  return { chatId: String(chat._id), action: 'billed', minuteNumber: result.minuteNumber };
+}
+
+/* -------------------------------------------------------------------------- */
+/* The astrologer's own connection dropping mid-session                       */
+/* -------------------------------------------------------------------------- */
+
+/**
+ * Pauses billing on every active session this astrologer is the other side
+ * of — called once their *last* socket disconnects (see socket/index.js).
+ * `astrologerDisconnectedAt` is what `runBillingSweep` reads to route a
+ * session to `tickAstrologerDisconnectGrace` instead of the normal tick.
+ */
+async function pauseSessionsForAstrologer(astrologerId, now = new Date()) {
+  const sessions = await ChatSession.find({
+    astrologer: astrologerId,
+    status: 'active',
+    type: 'consultation',
+    astrologerDisconnectedAt: null,
+  });
+
+  for (const chat of sessions) {
+    chat.astrologerDisconnectedAt = now;
+    // eslint-disable-next-line no-await-in-loop
+    await chat.save();
+    emit(roomFor(chat._id), CHAT_EVENTS.ASTROLOGER_LEFT, {
+      chatId: String(chat._id),
+      reconnectSeconds: env.consultation.astrologerReconnectGraceSeconds,
+    });
+  }
+}
+
+/**
+ * Resumes whatever this astrologer's own disconnect paused — called once
+ * they reconnect (any device; see socket/index.js). `lastBilledAt` (or
+ * `startedAt`, for a session paused before its first minute ever ticked) is
+ * pushed forward by exactly how long the pause lasted, so the outage costs
+ * the seeker nothing: the next minute is due exactly as many seconds from
+ * now as it would have been had the astrologer never left.
+ */
+async function resumeSessionsForAstrologer(astrologerId, now = new Date()) {
+  const sessions = await ChatSession.find({
+    astrologer: astrologerId,
+    status: 'active',
+    type: 'consultation',
+    astrologerDisconnectedAt: { $ne: null },
+  });
+
+  for (const chat of sessions) {
+    const pausedMs = now.getTime() - chat.astrologerDisconnectedAt.getTime();
+    const anchorField = chat.lastBilledAt ? 'lastBilledAt' : 'startedAt';
+    const anchor = chat[anchorField];
+
+    // eslint-disable-next-line no-await-in-loop
+    await ChatSession.updateOne(
+      { _id: chat._id },
+      {
+        $set: {
+          [anchorField]: new Date(anchor.getTime() + pausedMs),
+          astrologerDisconnectedAt: null,
+          /** A fresh check-ahead window for whatever minute is now due, since the one before the pause is moot. */
+          nextMinuteChecked: false,
+        },
+      },
+    );
+    emit(roomFor(chat._id), CHAT_EVENTS.ASTROLOGER_JOINED, { chatId: String(chat._id) });
+  }
+}
+
+/**
+ * Reverses exactly one already-billed minute — both the seeker's debit and
+ * the astrologer's matching earning from it — because the service that
+ * minute paid for never happened. The only caller today is
+ * `tickAstrologerDisconnectGrace`, for the one minute that was in progress
+ * when the astrologer dropped and never came back. Never partial: the
+ * platform bills in whole minutes (`PARTIAL_MINUTE_ROUNDING`), so this only
+ * ever reverses one whole minute, the most recently billed one.
+ */
+async function refundMinute(chat, title) {
+  const tick = await ChatBillingTick.findOne({ chatSession: chat._id, minuteNumber: chat.minutesBilled });
+  if (!tick || tick.amount <= 0) {
+    /** Free minute, or nothing billed yet — nothing to reverse. */
+    return;
+  }
+
+  await walletService.post({
+    ownerRole: 'user',
+    ownerId: chat.user,
+    direction: 'credit',
+    type: 'refund',
+    amount: tick.amount,
+    title,
+    chatSession: chat._id,
+  });
+
+  const commission = Math.round((tick.amount * chat.billing.commissionPercent) / 100);
+  const earning = tick.amount - commission;
+  if (earning > 0) {
+    try {
+      await walletService.post({
+        ownerRole: 'astrologer',
+        ownerId: chat.astrologer,
+        direction: 'debit',
+        type: 'adjustment',
+        amount: earning,
+        title: `${title} (earning reversed)`,
+        chatSession: chat._id,
+      });
+    } catch (error) {
+      if (!(error instanceof ApiError)) {
+        throw error;
+      }
+      /**
+       * The astrologer's balance doesn't cover clawing this back (they may
+       * already have withdrawn it) — the same gap services/admin.service.js's
+       * own refundTransaction has today. The seeker is made whole either
+       * way; this side becomes a manual reconciliation until that's
+       * addressed platform-wide.
+       */
+    }
+  }
+
+  await ChatSession.updateOne(
+    { _id: chat._id },
+    {
+      $inc: {
+        minutesBilled: -1,
+        'billing.amountCharged': -tick.amount,
+        'billing.astrologerEarning': -earning,
+      },
+    },
+  );
+}
+
+/**
+ * One paused session's turn at the tick: still within
+ * `ASTROLOGER_RECONNECT_GRACE_SECONDS` of the astrologer's disconnect, this
+ * does nothing (billing stays frozen); past it, the session ends — the one
+ * minute that was running when they dropped is refunded first, since the
+ * seeker never actually got it.
+ */
+async function tickAstrologerDisconnectGrace(chat, now) {
+  const disconnectedMs = now.getTime() - chat.astrologerDisconnectedAt.getTime();
+  if (disconnectedMs < env.consultation.astrologerReconnectGraceSeconds * 1000) {
+    return { chatId: String(chat._id), action: 'astrologer_disconnect_grace' };
+  }
+
+  await refundMinute(chat, 'Astrologer disconnected — last minute refunded');
+  await endChat({ chatId: chat._id, accountId: chat.user, endedBy: 'system', reason: 'astrologer_disconnected' });
+  return { chatId: String(chat._id), action: 'ended_astrologer_disconnected' };
+}
+
+/* -------------------------------------------------------------------------- */
+/* The seeker's own balance running out mid-session                          */
+/* -------------------------------------------------------------------------- */
+
+/**
+ * Resumes whatever a wallet top-up just unblocked — every one of this
+ * seeker's own sessions paused on `balanceExhaustedAt` (see the
+ * insufficient-balance branch in `tickOneSession`) that the new balance now
+ * covers for at least one more minute. Called right after a top-up lands
+ * (wallet.controller.js's confirmTopUp) rather than polled by the sweep —
+ * an indefinite pause has nothing to time out, only a deposit ever ends it.
+ *
+ * Mirrors resumeSessionsForAstrologer: `lastBilledAt` (or `startedAt`, if
+ * paused before ever ticking) is pushed forward by exactly how long the
+ * pause lasted, so the next minute is due exactly as many seconds from now
+ * as it would have been had the balance never run out — the pause itself
+ * costs the seeker nothing extra, same guarantee as the astrologer-dropped
+ * case.
+ */
+async function resumePausedSessionsForUser(userId, now = new Date()) {
+  const sessions = await ChatSession.find({
+    user: userId,
+    status: 'active',
+    type: 'consultation',
+    balanceExhaustedAt: { $ne: null },
+  });
+
+  const resumed = [];
+  for (const chat of sessions) {
+    // eslint-disable-next-line no-await-in-loop
+    const { affordable } = await canAffordNextMinute(chat);
+    if (!affordable) {
+      /** Topped up, but still not enough for even one more minute — stays paused. */
+      continue;
+    }
+
+    const pausedMs = now.getTime() - chat.balanceExhaustedAt.getTime();
+    const anchorField = chat.lastBilledAt ? 'lastBilledAt' : 'startedAt';
+    const anchor = chat[anchorField];
+
+    // eslint-disable-next-line no-await-in-loop
+    await ChatSession.updateOne(
+      { _id: chat._id },
+      {
+        $set: {
+          [anchorField]: new Date(anchor.getTime() + pausedMs),
+          balanceExhaustedAt: null,
+          /** A fresh check-ahead window for whatever minute is now due, since the one before the pause is moot. */
+          nextMinuteChecked: false,
+        },
+      },
+    );
+    // eslint-disable-next-line no-await-in-loop
+    emit(roomFor(chat._id), CHAT_EVENTS.LOW_BALANCE, {
+      chatId: String(chat._id),
+      exhausted: false,
+      paused: false,
+      balanceRemaining: await balanceFor(userId),
+    });
+    resumed.push(String(chat._id));
+  }
+  return resumed;
+}
+
+/**
+ * The live billing tick: bills every active session that is due, handles
+ * low-balance warnings, grace, and crash recovery, and ages out any join
+ * request that has sat unanswered too long. `now` is injectable so tests run
+ * against a fake clock instead of waiting on real time — see
+ * jobs/chatBilling.job.js for the real recurring scheduler.
+ */
+async function runBillingSweep(now = new Date()) {
+  /**
+   * `type: 'consultation'` only — an `ai` thread (getOrCreateAiChat) is also
+   * `status: 'active'`, forever, with no astrologer and nothing ever billed
+   * against it. Ticking one here found it long overdue (its startedAt is
+   * whenever the thread was first opened, possibly weeks ago, since nothing
+   * else ever advances lastBilledAt) and tried to timeout-end it with
+   * `accountId: chat.astrologer` — undefined, since an AI thread has none —
+   * which participantChat rightly refuses, crashing the sweep every run.
+   */
+  const active = await ChatSession.find({ status: 'active', type: 'consultation' });
+  const results = [];
+  for (const chat of active) {
+    /**
+     * Paused for an astrologer-disconnect grace — never ticked; see
+     * tickAstrologerDisconnectGrace. A balance pause needs no such routing:
+     * tickOneSession itself returns 'balance_paused' immediately whenever
+     * `balanceExhaustedAt` is set, since it has no timeout to poll for either.
+     */
+    // eslint-disable-next-line no-await-in-loop
+    results.push(
+      chat.astrologerDisconnectedAt
+        ? await tickAstrologerDisconnectGrace(chat, now)
+        : await tickOneSession(chat, now),
+    );
+  }
+
+  await expireStaleRequests(undefined, now);
+
+  return results;
+}
+
+/* -------------------------------------------------------------------------- */
 /* Ending, and paying for it                                                  */
 /* -------------------------------------------------------------------------- */
 
 /**
- * Ends an active chat and settles it.
+ * Ends an active chat.
  *
- * Three things happen, in this order:
- *   1. work out what it cost  (settle() on the model rounds up to the minute)
- *   2. take it from the seeker's wallet and pay the astrologer their share
- *   3. mark the chat ended and tell both sides
- *
- * Charging before marking it ended matters: if the charge fails, the chat is
- * left active and can be ended again, rather than being closed for free.
+ * The live tick (runBillingSweep, above) may not have caught up to this exact
+ * instant — before closing, this bills whatever is still outstanding up to
+ * now, so the total charged always equals `minutesFor(actual elapsed
+ * seconds)`, exactly what the old lump-sum settle-at-end used to compute in
+ * one shot, just spread across the session instead of charged all at once
+ * when it closes. If a minute genuinely cannot be afforded, the loop stops —
+ * the same "charge what was actually there" grace the old code had.
  */
 async function endChat({ chatId, accountId, endedBy, reason }) {
   const [chat, role] = await participantChat(chatId, accountId);
@@ -276,81 +959,44 @@ async function endChat({ chatId, accountId, endedBy, reason }) {
     throw ApiError.badRequest(`This chat is already ${chat.status}.`);
   }
 
-  const seconds = Math.max(Math.round((Date.now() - chat.startedAt.getTime()) / 1000), 0);
-  chat.settle(seconds);
+  const now = new Date();
+  const seconds = Math.max(Math.round((now.getTime() - chat.startedAt.getTime()) / 1000), 0);
+  /**
+   * Neither a crash-recovery timeout (tickOneSession, when a session's last
+   * tick is older than MAX_TICK_GAP_MS) nor an astrologer-disconnect grace
+   * running out (tickAstrologerDisconnectGrace, whose caller already
+   * refunded the one minute that was interrupted) may true up to the full
+   * elapsed time — that elapsed span IS the outage, and charging for it
+   * would bill the seeker for time nobody was there to answer, not for
+   * service received. Every other end reason trues up normally, to exactly
+   * minutesFor(actual elapsed seconds).
+   */
+  const minutesOwed =
+    reason === 'timeout' || reason === 'astrologer_disconnected' ? chat.minutesBilled : minutesFor(seconds);
 
-  const astrologer = await Astrologer.findById(chat.astrologer);
-  const chargeable = chat.billing.amountCharged;
-
-  if (chargeable > 0) {
-    /**
-     * The seeker may have spent their balance elsewhere mid-chat. Rather than
-     * fail, take whatever is actually there — the wallet cannot go negative,
-     * and a chat that already happened has to be closed.
-     */
-    const user = await User.findById(chat.user).select('wallet');
-    const toCharge = Math.min(chargeable, user.wallet.balance);
-
-    if (toCharge > 0) {
-      await walletService.post({
-        ownerRole: 'user',
-        ownerId: chat.user,
-        direction: 'debit',
-        type: 'consultation_charge',
-        amount: toCharge,
-        title: `${chat.channel === 'call' ? 'Call' : 'Chat'} with ${astrologer?.name || 'astrologer'}`,
-        chatSession: chat._id,
-      });
-    }
-
-    /** The astrologer is paid on what was actually collected, less commission. */
-    const commission = Math.round((toCharge * chat.billing.commissionPercent) / 100);
-    const earning = toCharge - commission;
-
-    chat.billing.amountCharged = toCharge;
-    chat.billing.astrologerEarning = earning;
-
-    if (earning > 0) {
-      await walletService.post({
-        ownerRole: 'astrologer',
-        ownerId: chat.astrologer,
-        direction: 'credit',
-        type: 'consultation_earning',
-        amount: earning,
-        title: `${chat.channel === 'call' ? 'Call' : 'Chat'} consultation`,
-        chatSession: chat._id,
-      });
+  while (chat.minutesBilled < minutesOwed) {
+    // eslint-disable-next-line no-await-in-loop
+    const result = await billNextMinute(chat, now);
+    if (!result.billed) {
+      break;
     }
   }
 
   chat.status = 'ended';
-  chat.endedAt = new Date();
+  chat.durationSeconds = seconds;
+  chat.billing.isSettled = true;
+  chat.endedAt = now;
   chat.endedBy = endedBy || role;
   chat.endReason = reason;
   await chat.save();
 
-  /** The platform's free-consult offer is spent the first time it is used. */
-  if (chat.billing.freeMinutes > 0) {
-    await User.updateOne(
-      { _id: chat.user, 'freeConsultation.isUsed': false },
-      {
-        $set: {
-          'freeConsultation.isUsed': true,
-          'freeConsultation.usedAt': new Date(),
-          'freeConsultation.usedInSession': chat._id,
-        },
-      },
-    );
-  }
-
-  const minutes = Math.ceil(seconds / 60);
   await Astrologer.updateOne(
     { _id: chat.astrologer },
     {
       $inc: {
         'presence.activeSessions': -1,
         'metrics.totalConsultations': 1,
-        [chat.channel === 'call' ? 'metrics.callMinutes' : 'metrics.chatMinutes']: minutes,
+        [chat.channel === 'call' ? 'metrics.callMinutes' : 'metrics.chatMinutes']: minutesOwed,
       },
     },
   );
@@ -362,7 +1008,7 @@ async function endChat({ chatId, accountId, endedBy, reason }) {
 
   await User.updateOne(
     { _id: chat.user },
-    { $inc: { 'stats.consultations': 1, 'stats.chatMinutes': minutes } },
+    { $inc: { 'stats.consultations': 1, 'stats.chatMinutes': minutesOwed } },
   );
 
   await Message.system(chat._id, 'Consultation ended.', 'ended');
@@ -370,6 +1016,7 @@ async function endChat({ chatId, accountId, endedBy, reason }) {
   emit(roomFor(chat._id), CHAT_EVENTS.ENDED, {
     chatId: String(chat._id),
     endedBy: chat.endedBy,
+    reason: chat.endReason,
     durationSeconds: chat.durationSeconds,
     amountCharged: chat.billing.amountCharged,
   });
@@ -436,46 +1083,40 @@ async function getOrCreateAiChat(userId) {
     user: userId,
     status: 'active',
     startedAt: new Date(),
-    billing: { ratePerMinute: 0, freeMinutes: 0, commissionPercent: 0 },
+    billing: { ratePerMinute: 0, commissionPercent: 0 },
   });
 
+  const greeting =
+    'Namaste! 🙏 I am your AI Astrology Assistant. I can answer questions about ' +
+    'your birth chart, planetary transits, compatibility, and more. How may I ' +
+    'guide you today?';
   await Message.send({
     chatId: chat._id,
     senderRole: 'ai',
     type: 'text',
-    content: {
-      text:
-        'Namaste! 🙏 I am your AI Astrology Assistant. I can answer questions about ' +
-        'your birth chart, planetary transits, compatibility, and more. How may I ' +
-        'guide you today?',
-    },
+    content: { text: greeting },
+    tokenCount: estimateTokens(greeting),
   });
 
   return chat;
 }
 
 /**
- * Produces the assistant's answer.
- *
- * **There is no AI provider wired up yet.** This returns a holding reply so the
- * screen works end to end. When a model is connected, call it here with the
- * question and the seeker's birth details — everything around this function
- * already stores and delivers whatever it returns.
- */
-async function generateAiReply({ question, birthDetails }) {
-  const known = birthDetails?.dateOfBirth
-    ? 'I can see your birth details on file, so I can work from your chart.'
-    : 'Add your birth details to your profile and I can answer from your own chart.';
-
-  return (
-    `You asked: “${String(question).trim()}”.\n\n${known}\n\n` +
-    'The astrology engine is not connected yet, so I cannot give you a real ' +
-    'reading. In the meantime a human astrologer can — try Find Astrologers.'
-  );
-}
-
-/**
  * Posts a question to the assistant and stores its answer.
+ *
+ * The actual reply is assistantService.generateReply's job — building the
+ * system prompt, the seeker's own chart summary, this thread's rolling
+ * memory, and its recent turns into one call to services/llm/index.js. This
+ * function only owns the ChatSession/Message bookkeeping around that: the
+ * question must be saved *before* generateReply runs (it reads the
+ * transcript back as context, the new question included), and the answer
+ * saved after, with its own real token count.
+ *
+ * Whether this turn also crosses the rolling-summary threshold is checked
+ * right here (assistantService.maybeSummarise is a no-op unless it does) —
+ * but fired detached from this response, never awaited: folding old turns
+ * into memory is a second LLM call, and answering the seeker's own question
+ * must never be made to wait on it too.
  *
  * Returns both turns, so the screen can append them together.
  */
@@ -485,29 +1126,30 @@ async function sendAiMessage({ userId, text, clientMessageId }) {
   }
 
   const chat = await getOrCreateAiChat(userId);
+  const trimmed = String(text).trim();
 
   const question = await Message.send({
     chatId: chat._id,
     senderId: userId,
     senderRole: 'user',
     type: 'text',
-    content: { text: String(text).trim() },
+    content: { text: trimmed },
     clientMessageId,
+    tokenCount: estimateTokens(trimmed),
   });
 
-  const UserProfile = require('../models/UserProfile');
-  const profile = await UserProfile.findOne({ user: userId }).select('birthDetails');
+  const reply = await assistantService.generateReply({ chat, userId });
 
   const answer = await Message.send({
     chatId: chat._id,
     senderRole: 'ai',
     type: 'text',
-    content: {
-      text: await generateAiReply({
-        question: text,
-        birthDetails: profile?.birthDetails,
-      }),
-    },
+    content: { text: reply.text },
+    tokenCount: reply.tokenCount,
+  });
+
+  assistantService.maybeSummarise(chat._id).catch(error => {
+    console.error('[assistant] rolling summary failed:', error.message);
   });
 
   return {
@@ -533,6 +1175,16 @@ function toChatRow(chat, viewerRole) {
       ? { id: String(other._id), name: other.name, photo: other.photoUrl || other.avatarUrl }
       : null,
     topic: chat.intake?.topic,
+    /** Only the seeker's own past submissions matter here — the "recent chats" intake shortcut on their own side, not something the astrologer's list rows need. */
+    birthDetails: viewerRole === 'user' && chat.intake?.birthDetails
+      ? {
+          fullName: chat.intake.birthDetails.fullName,
+          gender: chat.intake.birthDetails.gender,
+          dateOfBirth: chat.intake.birthDetails.dateOfBirth,
+          timeOfBirth: chat.intake.birthDetails.timeOfBirth,
+          place: chat.intake.birthDetails.place?.formatted,
+        }
+      : undefined,
     lastMessage: chat.lastMessage,
     unread: chat.unread?.[viewerRole] || 0,
     startedAt: chat.startedAt,
@@ -542,6 +1194,33 @@ function toChatRow(chat, viewerRole) {
     astrologerEarning: chat.billing?.astrologerEarning,
     rating: chat.review?.rating,
     createdAt: chat.createdAt,
+  };
+}
+
+/**
+ * One session's current state, with server-computed remaining minutes — what
+ * a client polls, or loads on reconnect, to know where the meter stands. The
+ * timer is 100% server-side; a client only ever displays this, never
+ * computes it.
+ */
+async function getSessionState({ chatId, accountId }) {
+  const [chat, role] = await participantChat(chatId, accountId);
+
+  return {
+    chatId: String(chat._id),
+    role,
+    channel: chat.channel,
+    status: chat.status,
+    startedAt: chat.startedAt,
+    ratePerMinute: chat.billing.ratePerMinute,
+    minutesBilled: chat.minutesBilled,
+    amountCharged: chat.billing.amountCharged,
+    /** Same "is it paused right now" truth as joinChat's own `paused` — this REST read is what a screen's very first render (before any socket rejoin has answered) has to go on. */
+    paused: Boolean(chat.balanceExhaustedAt),
+    pausedSince: chat.balanceExhaustedAt,
+    minutesRemaining: chat.status === 'active' ? await remainingMinutesFor(chat) : undefined,
+    endedAt: chat.endedAt,
+    endReason: chat.endReason,
   };
 }
 
@@ -572,8 +1251,56 @@ async function listChats({ accountId, role, status, page = 1, limit = 20 }) {
   };
 }
 
+/**
+ * Ages a request out to `missed` once it has sat unanswered past the window
+ * the astrologer was shown it in (`REQUEST_TIMEOUT_SECONDS`) — the astrologer
+ * "didn't join in time" case. Nothing is ever charged at the request stage
+ * (billing only starts once accepted, in acceptChat), so there is no refund
+ * to issue here — just closing the request out and telling the seeker.
+ *
+ * Called two ways: scoped to one astrologer, lazily, wherever that
+ * astrologer's own queue is read (pendingRequests, below); and globally
+ * (`astrologerId` omitted) from runBillingSweep's own recurring tick, so a
+ * seeker is not left waiting on a dead request until something else happens
+ * to read that astrologer's queue.
+ */
+async function expireStaleRequests(astrologerId, now = new Date()) {
+  const cutoff = new Date(now.getTime() - REQUEST_TIMEOUT_SECONDS * 1000);
+  const filter = { status: 'requested', requestedAt: { $lte: cutoff } };
+  if (astrologerId) {
+    filter.astrologer = astrologerId;
+  }
+
+  const stale = await ChatSession.find(filter);
+  for (const chat of stale) {
+    chat.status = 'missed';
+    chat.endedAt = now;
+    chat.endedBy = 'system';
+    chat.endReason = 'astrologer_no_response';
+    // eslint-disable-next-line no-await-in-loop
+    await chat.save();
+
+    emit(`user:${chat.user}`, 'chat:missed', { chatId: String(chat._id) });
+    // eslint-disable-next-line no-await-in-loop
+    await notificationService
+      .notify({
+        ownerRole: 'user',
+        ownerId: chat.user,
+        type: 'consultation_missed',
+        title: 'No response',
+        body: 'The astrologer did not respond in time. Please try again or choose someone else.',
+        action: { screen: 'consultation', id: String(chat._id) },
+      })
+      .catch(() => {}); // best-effort — a notification failure must never block the expiry itself
+  }
+
+  return stale.length;
+}
+
 /** The astrologer's incoming-request queue. */
 async function pendingRequests(astrologerId) {
+  await expireStaleRequests(astrologerId);
+
   const rows = await ChatSession.find({ astrologer: astrologerId, status: 'requested' })
     .sort({ requestedAt: -1 })
     .populate('user', 'name avatarUrl');
@@ -610,6 +1337,18 @@ async function joinChat({ chatId, accountId, lastSeq = 0 }) {
     chatId: String(chat._id),
     role,
     status: chat.status,
+    /**
+     * Whether billing is paused for insufficient balance, RIGHT NOW — not
+     * just "was a pause event ever seen." A live pause/resume push
+     * (chat:low_balance) can be missed entirely by a socket that was briefly
+     * disconnected; this join/rejoin response (services/socket.ts's own
+     * `rejoin`, which fires on every connect, not only reconnects) is what
+     * lets a client recover the true current state instead of trusting
+     * whatever it last happened to see.
+     */
+    paused: Boolean(chat.balanceExhaustedAt),
+    /** When the current pause began, if any — lets a (re)joining client backdate its own freeze point instead of only freezing from whenever it happens to notice. */
+    pausedSince: chat.balanceExhaustedAt,
     seq: chat.messageSeq,
     unread: chat.unread[role],
     messages: missed.map(message => message.toSocketPayload()),
@@ -662,18 +1401,34 @@ module.exports = {
   participantChat,
   getOrCreateAiChat,
   sendAiMessage,
+  precheckSession,
   requestChat,
   acceptChat,
   rejectChat,
   cancelChat,
+  billNextMinute,
+  tickOneSession,
+  tickAstrologerDisconnectGrace,
+  pauseSessionsForAstrologer,
+  resumeSessionsForAstrologer,
+  resumePausedSessionsForUser,
+  refundMinute,
+  runBillingSweep,
+  remainingMinutesFor,
+  getSessionState,
   endChat,
   rateChat,
   listChats,
   pendingRequests,
+  expireStaleRequests,
   getMessages,
   joinChat,
   sendMessage,
   markSeen,
   toChatRow,
   REQUEST_TIMEOUT_SECONDS,
+  MIN_SESSION_MINUTES,
+  TICK_INTERVAL_MS,
+  LOW_BALANCE_WARNING_MINUTES,
+  MAX_TICK_GAP_MS,
 };

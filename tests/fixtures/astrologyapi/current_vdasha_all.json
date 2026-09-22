@@ -1,0 +1,310 @@
+{
+  "major": {
+    "dasha_period": [
+      {
+        "planet": "Mercury",
+        "planet_id": 3,
+        "start": "25-10-1987  2:43",
+        "end": "24-10-2004  8:43"
+      },
+      {
+        "planet": "Ketu",
+        "planet_id": 8,
+        "start": "24-10-2004  8:43",
+        "end": "25-10-2011  2:43"
+      },
+      {
+        "planet": "Venus",
+        "planet_id": 5,
+        "start": "25-10-2011  2:43",
+        "end": "25-10-2031  2:43"
+      },
+      {
+        "planet": "Sun",
+        "planet_id": 0,
+        "start": "25-10-2031  2:43",
+        "end": "24-10-2037  14:43"
+      },
+      {
+        "planet": "Moon",
+        "planet_id": 1,
+        "start": "24-10-2037  14:43",
+        "end": "25-10-2047  2:43"
+      },
+      {
+        "planet": "Mars",
+        "planet_id": 2,
+        "start": "25-10-2047  2:43",
+        "end": "24-10-2054  20:43"
+      },
+      {
+        "planet": "Rahu",
+        "planet_id": 7,
+        "start": "24-10-2054  20:43",
+        "end": "24-10-2072  8:43"
+      },
+      {
+        "planet": "Jupiter",
+        "planet_id": 4,
+        "start": "24-10-2072  8:43",
+        "end": "24-10-2088  8:43"
+      },
+      {
+        "planet": "Saturn",
+        "planet_id": 6,
+        "start": "24-10-2088  8:43",
+        "end": "26-10-2107  2:43"
+      }
+    ]
+  },
+  "minor": {
+    "planet": {
+      "major": "Venus"
+    },
+    "dasha_period": [
+      {
+        "planet": "Venus",
+        "planet_id": 5,
+        "start": "25-10-2011  2:43",
+        "end": "23-2-2015  14:43"
+      },
+      {
+        "planet": "Sun",
+        "planet_id": 0,
+        "start": "23-2-2015  14:43",
+        "end": "23-2-2016  20:43"
+      },
+      {
+        "planet": "Moon",
+        "planet_id": 1,
+        "start": "23-2-2016  20:43",
+        "end": "24-10-2017  14:43"
+      },
+      {
+        "planet": "Mars",
+        "planet_id": 2,
+        "start": "24-10-2017  14:43",
+        "end": "24-12-2018  17:43"
+      },
+      {
+        "planet": "Rahu",
+        "planet_id": 7,
+        "start": "24-12-2018  17:43",
+        "end": "24-12-2021  11:43"
+      },
+      {
+        "planet": "Jupiter",
+        "planet_id": 4,
+        "start": "24-12-2021  11:43",
+        "end": "24-8-2024  11:43"
+      },
+      {
+        "planet": "Saturn",
+        "planet_id": 6,
+        "start": "24-8-2024  11:43",
+        "end": "25-10-2027  2:43"
+      },
+      {
+        "planet": "Mercury",
+        "planet_id": 3,
+        "start": "25-10-2027  2:43",
+        "end": "24-8-2030  23:43"
+      },
+      {
+        "planet": "Ketu",
+        "planet_id": 8,
+        "start": "24-8-2030  23:43",
+        "end": "25-10-2031  2:43"
+      }
+    ]
+  },
+  "sub_minor": {
+    "planet": {
+      "major": "Venus",
+      "minor": "Saturn"
+    },
+    "dasha_period": [
+      {
+        "planet": "Saturn",
+        "planet_id": 6,
+        "start": "24-8-2024  11:43",
+        "end": "23-2-2025  14:54"
+      },
+      {
+        "planet": "Mercury",
+        "planet_id": 3,
+        "start": "23-2-2025  14:54",
+        "end": "6-8-2025  11:25"
+      },
+      {
+        "planet": "Ketu",
+        "planet_id": 8,
+        "start": "6-8-2025  11:25",
+        "end": "12-10-2025  22:42"
+      },
+      {
+        "planet": "Venus",
+        "planet_id": 5,
+        "start": "12-10-2025  22:42",
+        "end": "23-4-2026  17:12"
+      },
+      {
+        "planet": "Sun",
+        "planet_id": 0,
+        "start": "23-4-2026  17:12",
+        "end": "20-6-2026  13:9"
+      },
+      {
+        "planet": "Moon",
+        "planet_id": 1,
+        "start": "20-6-2026  13:9",
+        "end": "24-9-2026  22:24"
+      },
+      {
+        "planet": "Mars",
+        "planet_id": 2,
+        "start": "24-9-2026  22:24",
+        "end": "1-12-2026  9:40"
+      },
+      {
+        "planet": "Rahu",
+        "planet_id": 7,
+        "start": "1-12-2026  9:40",
+        "end": "23-5-2027  21:31"
+      },
+      {
+        "planet": "Jupiter",
+        "planet_id": 4,
+        "start": "23-5-2027  21:31",
+        "end": "25-10-2027  2:43"
+      }
+    ]
+  },
+  "sub_sub_minor": {
+    "planet": {
+      "major": "Venus",
+      "minor": "Saturn",
+      "sub_minor": "Moon"
+    },
+    "dasha_period": [
+      {
+        "planet": "Moon",
+        "planet_id": 1,
+        "start": "20-6-2026  13:9",
+        "end": "28-6-2026  13:55"
+      },
+      {
+        "planet": "Mars",
+        "planet_id": 2,
+        "start": "28-6-2026  13:55",
+        "end": "4-7-2026  4:51"
+      },
+      {
+        "planet": "Rahu",
+        "planet_id": 7,
+        "start": "4-7-2026  4:51",
+        "end": "18-7-2026  15:50"
+      },
+      {
+        "planet": "Jupiter",
+        "planet_id": 4,
+        "start": "18-7-2026  15:50",
+        "end": "31-7-2026  12:16"
+      },
+      {
+        "planet": "Saturn",
+        "planet_id": 6,
+        "start": "31-7-2026  12:16",
+        "end": "15-8-2026  18:32"
+      },
+      {
+        "planet": "Mercury",
+        "planet_id": 3,
+        "start": "15-8-2026  18:32",
+        "end": "29-8-2026  10:15"
+      },
+      {
+        "planet": "Ketu",
+        "planet_id": 8,
+        "start": "29-8-2026  10:15",
+        "end": "4-9-2026  1:11"
+      },
+      {
+        "planet": "Venus",
+        "planet_id": 5,
+        "start": "4-9-2026  1:11",
+        "end": "20-9-2026  2:44"
+      },
+      {
+        "planet": "Sun",
+        "planet_id": 0,
+        "start": "20-9-2026  2:44",
+        "end": "24-9-2026  22:24"
+      }
+    ]
+  },
+  "sub_sub_sub_minor": {
+    "planet": {
+      "major": "Venus",
+      "minor": "Saturn",
+      "sub_minor": "Moon",
+      "sub_sub_minor": "Venus"
+    },
+    "dasha_period": [
+      {
+        "planet": "Venus",
+        "planet_id": 5,
+        "start": "4-9-2026  1:11",
+        "end": "6-9-2026  17:27"
+      },
+      {
+        "planet": "Sun",
+        "planet_id": 0,
+        "start": "6-9-2026  17:27",
+        "end": "7-9-2026  12:43"
+      },
+      {
+        "planet": "Moon",
+        "planet_id": 1,
+        "start": "7-9-2026  12:43",
+        "end": "8-9-2026  20:51"
+      },
+      {
+        "planet": "Mars",
+        "planet_id": 2,
+        "start": "8-9-2026  20:51",
+        "end": "9-9-2026  19:20"
+      },
+      {
+        "planet": "Rahu",
+        "planet_id": 7,
+        "start": "9-9-2026  19:20",
+        "end": "12-9-2026  5:10"
+      },
+      {
+        "planet": "Jupiter",
+        "planet_id": 4,
+        "start": "12-9-2026  5:10",
+        "end": "14-9-2026  8:35"
+      },
+      {
+        "planet": "Saturn",
+        "planet_id": 6,
+        "start": "14-9-2026  8:35",
+        "end": "16-9-2026  21:37"
+      },
+      {
+        "planet": "Mercury",
+        "planet_id": 3,
+        "start": "16-9-2026  21:37",
+        "end": "19-9-2026  4:14"
+      },
+      {
+        "planet": "Ketu",
+        "planet_id": 8,
+        "start": "19-9-2026  4:14",
+        "end": "20-9-2026  2:44"
+      }
+    ]
+  }
+}

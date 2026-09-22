@@ -21,7 +21,8 @@ const Astrologer = require('../models/Astrologer');
 const AstrologerProfile = require('../models/AstrologerProfile');
 const Admin = require('../models/Admin');
 const ApiError = require('../utils/ApiError');
-const { verifyPassword } = require('../utils/password');
+const { hashPassword, verifyPassword } = require('../utils/password');
+const { OTP_TTL_SECONDS, OTP_RESEND_SECONDS } = require('../config/constants');
 const {
   signAccessToken,
   signRefreshToken,
@@ -29,6 +30,8 @@ const {
 } = require('../utils/token');
 const otpService = require('./otp.service');
 const settingsService = require('./settings.service');
+const refreshTokenService = require('./refreshToken.service');
+const crypto = require('crypto');
 
 /** Which collection each role's accounts live in. */
 const ACCOUNT_MODELS = {
@@ -53,10 +56,30 @@ function localPhoneOf(value) {
   return digits.length === 12 && digits.startsWith('91') ? digits.slice(2) : digits;
 }
 
-/** "15/08/1999" -> a Date at UTC midnight, so no timezone shifts the day. */
+/** Month abbreviations, for the worded format {@link parseBirthDate} also accepts. */
+const WORDED_MONTHS = ['jan', 'feb', 'mar', 'apr', 'may', 'jun', 'jul', 'aug', 'sep', 'oct', 'nov', 'dec'];
+
+/**
+ * "15/08/1999" (every birth-details screen) or "15 August 1999" (the chat
+ * intake form's own wheel, which prints the month out in full) -> a Date at
+ * UTC midnight, so no timezone shifts the day.
+ */
 function parseBirthDate(value) {
-  const [, day, month, year] = /^(\d{1,2})[/-](\d{1,2})[/-](\d{4})$/.exec(String(value).trim());
-  return new Date(Date.UTC(Number(year), Number(month) - 1, Number(day)));
+  const trimmed = String(value).trim();
+
+  const numeric = /^(\d{1,2})[/-](\d{1,2})[/-](\d{4})$/.exec(trimmed);
+  if (numeric) {
+    const [, day, month, year] = numeric;
+    return new Date(Date.UTC(Number(year), Number(month) - 1, Number(day)));
+  }
+
+  const worded = /^(\d{1,2})\s+([A-Za-z]+)\s+(\d{4})$/.exec(trimmed);
+  const monthIndex = worded ? WORDED_MONTHS.indexOf(worded[2].slice(0, 3).toLowerCase()) : -1;
+  if (worded && monthIndex !== -1) {
+    return new Date(Date.UTC(Number(worded[3]), monthIndex, Number(worded[1])));
+  }
+
+  throw new Error(`Unrecognised date of birth: "${value}".`);
 }
 
 /** "06 : 30 AM" -> "06:30". A 24-hour time is passed straight through. */
@@ -249,7 +272,7 @@ function assertCanLogIn(account, { role, channel }) {
     );
   }
 
-  if (account.status === 'blocked' || account.status === 'deleted') {
+  if (!isAccountActive(account, role)) {
     throw ApiError.forbidden('This account is not active.', 'account_blocked');
   }
 
@@ -353,6 +376,159 @@ async function verifyLoginOtp({ role, channel, phone, email, code }) {
   } else {
     account.isEmailVerified = true;
   }
+  account.lastLoginAt = new Date();
+  account.lastActiveAt = new Date();
+  await account.save();
+
+  return account;
+}
+
+/* -------------------------------------------------------------------------- */
+/* Apple / Google Sign-In (user_app only)                                     */
+/* -------------------------------------------------------------------------- */
+
+/**
+ * Opens a bare account for a first-time Apple/Google sign-in.
+ *
+ * Phone and email OTP never auto-register — an unrecognised number or address
+ * is answered `account_not_found` and the app sends the person to Register,
+ * because a code proves nothing about who is asking for it beyond "controls
+ * this phone/inbox right now". Apple and Google are different: the token
+ * itself already vouches for a real, singular identity, so there is nothing
+ * left for a separate Register step to add except the astrology-specific
+ * fields (gender, birth details, ...) neither provider has any reason to
+ * know. So sign-in opens the account on the spot rather than refusing it.
+ *
+ * What gets created is deliberately thin — no gender, no birth details, and
+ * a name only when the provider handed one over (Google usually does; Apple
+ * only ever does on the very first authorization, and only if the client
+ * captured and forwarded it as `fullName`). `UserProfile.completion` reads
+ * that thinness on its own — see the model — which is what the client uses
+ * to route a fresh social sign-in to Edit Profile instead of Home.
+ */
+async function createSocialAccount({ authProvider, providerId, email, emailVerified, fullName }) {
+  const normalisedEmail = email ? String(email).trim().toLowerCase() : undefined;
+  const name = fullName ? String(fullName).trim() : undefined;
+
+  const user = await User.create({
+    name,
+    email: normalisedEmail,
+    authProvider,
+    providerId,
+    isEmailVerified: Boolean(normalisedEmail && emailVerified),
+  });
+
+  const profile = await UserProfile.create({ user: user._id, fullName: name });
+
+  user.profile = profile._id;
+  await user.save();
+
+  return user;
+}
+
+/**
+ * Signs in with an Apple identity token, verified against Apple's own keys
+ * by appleAuth.service.js.
+ *
+ * `fullName` is optional and only ever meaningful on a brand-new account:
+ * Apple hands the client the user's name once, on the very first
+ * authorization, as a separate field alongside the token rather than inside
+ * it — so it only has anything to contribute the one time createSocialAccount
+ * runs. Every later sign-in, and any sign-in the client did not have a name
+ * for, passes nothing here and that is fine.
+ */
+async function loginWithApple({ identityToken, fullName }) {
+  const appleAuthService = require('./appleAuth.service');
+
+  let claims;
+  try {
+    claims = await appleAuthService.verifyIdentityToken(identityToken);
+  } catch (error) {
+    if (error.code === 'apple_not_configured') {
+      throw ApiError.badRequest('Apple Sign-In is not set up yet.', undefined, 'apple_not_configured');
+    }
+    throw ApiError.unauthorized('That Apple sign-in could not be verified.', 'invalid_apple_token');
+  }
+
+  let account = await User.findOne({ authProvider: 'apple', providerId: claims.sub });
+
+  /** First sign-in on a new device for someone who already registered with this email. */
+  if (!account && claims.email) {
+    account = await User.findOne({ email: claims.email.trim().toLowerCase() });
+    if (account && account.authProvider !== 'apple') {
+      account.authProvider = 'apple';
+      account.providerId = claims.sub;
+    }
+  }
+
+  if (!account) {
+    account = await createSocialAccount({
+      authProvider: 'apple',
+      providerId: claims.sub,
+      email: claims.email,
+      emailVerified: claims.emailVerified,
+      fullName,
+    });
+  }
+
+  if (!isAccountActive(account, 'user')) {
+    throw ApiError.forbidden('This account is not active.', 'account_blocked');
+  }
+
+  account.lastLoginAt = new Date();
+  account.lastActiveAt = new Date();
+  await account.save();
+
+  return account;
+}
+
+/**
+ * Signs in with a Google ID token, verified against Google's own keys by
+ * googleAuth.service.js.
+ *
+ * `fullName` is the same escape hatch loginWithApple takes, kept here for
+ * symmetry — Google's ID token usually carries `name` itself (`claims.name`,
+ * used as the fallback below), but not every client requests the scope that
+ * fills it in.
+ */
+async function loginWithGoogle({ idToken, fullName }) {
+  const googleAuthService = require('./googleAuth.service');
+
+  let claims;
+  try {
+    claims = await googleAuthService.verifyIdToken(idToken);
+  } catch (error) {
+    if (error.code === 'google_not_configured') {
+      throw ApiError.badRequest('Google Sign-In is not set up yet.', undefined, 'google_not_configured');
+    }
+    throw ApiError.unauthorized('That Google sign-in could not be verified.', 'invalid_google_token');
+  }
+
+  let account = await User.findOne({ authProvider: 'google', providerId: claims.sub });
+
+  /** First sign-in on a new device for someone who already registered with this (verified) email. */
+  if (!account && claims.email && claims.emailVerified) {
+    account = await User.findOne({ email: claims.email.trim().toLowerCase() });
+    if (account && account.authProvider !== 'google') {
+      account.authProvider = 'google';
+      account.providerId = claims.sub;
+    }
+  }
+
+  if (!account) {
+    account = await createSocialAccount({
+      authProvider: 'google',
+      providerId: claims.sub,
+      email: claims.email,
+      emailVerified: claims.emailVerified,
+      fullName: fullName || claims.name,
+    });
+  }
+
+  if (!isAccountActive(account, 'user')) {
+    throw ApiError.forbidden('This account is not active.', 'account_blocked');
+  }
+
   account.lastLoginAt = new Date();
   account.lastActiveAt = new Date();
   await account.save();
@@ -522,35 +698,182 @@ async function resendAdminOtp({ email }) {
   }
 }
 
+/**
+ * Step one of a forgotten password: a code to the admin's inbox.
+ *
+ * The response is identical whether or not the address belongs to an admin —
+ * same reasoning as loginAdmin's identical refusal for a wrong email vs. a
+ * wrong password, just here there is no "wrong" answer to give at all, so an
+ * unknown address gets the same shape a real send would have produced.
+ */
+async function requestAdminPasswordReset({ email }) {
+  const normalized = String(email).trim().toLowerCase();
+  const admin = await Admin.findOne({ email: normalized });
+
+  if (!admin || admin.status !== 'active') {
+    return {
+      requested: true,
+      destination: otpService.maskDestination('email', normalized),
+      expiresInSeconds: OTP_TTL_SECONDS,
+      resendInSeconds: OTP_RESEND_SECONDS,
+    };
+  }
+
+  const sent = await otpService.sendOtp({
+    channel: 'email',
+    destination: admin.email,
+    purpose: 'admin_password_reset',
+  }).catch(error => {
+    /** Already sent one moments ago — reuse it rather than refusing. */
+    if (error.cooldown) {
+      return { expiresInSeconds: 0, resendInSeconds: error.cooldown };
+    }
+    throw error;
+  });
+
+  return {
+    requested: true,
+    destination: otpService.maskDestination('email', admin.email),
+    ...sent,
+  };
+}
+
+/** Sends the reset code again — same non-revealing shape as the first send. */
+async function resendAdminPasswordReset({ email }) {
+  const normalized = String(email).trim().toLowerCase();
+  const admin = await Admin.findOne({ email: normalized });
+
+  if (!admin || admin.status !== 'active') {
+    return {
+      requested: true,
+      expiresInSeconds: OTP_TTL_SECONDS,
+      resendInSeconds: OTP_RESEND_SECONDS,
+    };
+  }
+
+  try {
+    return {
+      requested: true,
+      ...(await otpService.sendOtp({
+        channel: 'email',
+        destination: admin.email,
+        purpose: 'admin_password_reset',
+      })),
+    };
+  } catch (error) {
+    if (error.cooldown) {
+      throw ApiError.tooManyRequests(error.message, 'otp_cooldown', error.cooldown);
+    }
+    throw error;
+  }
+}
+
+/**
+ * Step two: the emailed code and a new password.
+ *
+ * Every refresh token the admin already holds is revoked once this succeeds —
+ * a forgotten password may have leaked, so whoever else was signed in loses
+ * that session too, not just the one making this request.
+ */
+async function resetAdminPassword({ email, code, password }) {
+  const admin = await Admin.findOne({ email: String(email).trim().toLowerCase() });
+
+  const refuse = (message, otpCode) => ApiError.unauthorized(message, otpCode);
+
+  if (!admin || admin.status !== 'active') {
+    /** No account to check the code against — same refusal a wrong code gets, so this cannot be used to find admins either. */
+    throw refuse('That code is not right. Ask for a new one.', 'otp_invalid');
+  }
+
+  const result = await otpService.verifyOtp({
+    channel: 'email',
+    destination: admin.email,
+    code,
+    purpose: 'admin_password_reset',
+  });
+
+  if (!result.ok) {
+    if (result.reason === 'invalid') {
+      const left = result.attemptsLeft;
+      throw refuse(
+        left > 0
+          ? `That code is not right. ${left} attempt${left === 1 ? '' : 's'} left.`
+          : 'That code is not right. Ask for a new one.',
+        'otp_invalid',
+      );
+    }
+    if (result.reason === 'attempts_exceeded') {
+      throw ApiError.tooManyRequests('Too many wrong attempts. Ask for a new code.', 'otp_attempts_exceeded');
+    }
+    throw refuse('That code has expired. Ask for a new one.', 'otp_expired');
+  }
+
+  admin.passwordHash = await hashPassword(password);
+  admin.failedLoginAttempts = 0;
+  admin.lockedUntil = undefined;
+  admin.tokenVersion += 1;
+  await admin.save();
+
+  await refreshTokenService.revokeAll({ role: 'admin', accountId: String(admin._id) });
+
+  return admin;
+}
+
 /* -------------------------------------------------------------------------- */
 /* Tokens                                                                     */
 /* -------------------------------------------------------------------------- */
 
 /**
+ * Whether an account is allowed to hold a session at all.
+ *
+ * Every role's status enum means something slightly different — User and
+ * Astrologer are `active`/`blocked`, Admin is `active`/`inactive`/`suspended`
+ * — so "not active" has to be asked per role rather than against one shared
+ * list of "bad" values, which is the mistake this replaces (see the module
+ * comment history: a blocked/deleted check that Admin's enum never matches
+ * meant a suspended admin could refresh forever).
+ */
+function isAccountActive(account, role) {
+  return role === 'admin'
+    ? account.status === 'active'
+    : account.status !== 'blocked' && account.status !== 'deleted';
+}
+
+/**
  * The pair of tokens that *is* a signed-in client.
  *
- * Nothing is written down server-side, which has one consequence worth saying
- * out loud: a token cannot be taken back before it expires. Signing out clears
- * the client's copy, but a refresh token already copied off a device keeps
- * working until it expires. JWT_REFRESH_EXPIRES_IN is the lever that bounds it.
+ * The access token is stateless, same as always. The refresh token carries a
+ * `jti` that gets recorded in Redis (refreshToken.service.js) the moment it is
+ * minted — that record is what lets sign-out, "sign out everywhere", and a
+ * blocked/suspended account actually take a refresh token back before its
+ * natural expiry, rather than only being able to stop the *next* one.
  */
-function issueTokens(accountId, role) {
+async function issueTokens(accountId, role) {
   if (!ACCOUNT_MODELS[role]) {
     throw new Error(`Cannot issue tokens for role "${role}".`);
   }
 
-  return {
+  const jti = crypto.randomUUID();
+  const tokens = {
     accessToken: signAccessToken(accountId, role),
-    refreshToken: signRefreshToken(accountId, role),
+    refreshToken: signRefreshToken(accountId, role, jti),
   };
+
+  await refreshTokenService.record({ role, accountId: String(accountId), jti });
+
+  return tokens;
 }
 
 /**
  * Trades a refresh token for a fresh pair.
  *
- * The account is re-read on the way through, which is the one late check this
- * flow can still make: blocking an account bites here, within one access
- * token's lifetime.
+ * Three things can refuse this: the signature/expiry (verifyRefreshToken), the
+ * account being gone or no longer active, and — the part a stateless JWT
+ * cannot do alone — the token having already been revoked (signed out,
+ * rotated away by an earlier refresh, or burned by "sign out everywhere").
+ * The old token is revoked here too, so a refresh token is good for exactly
+ * one trade; a copy of an already-spent one is refused just like a signed-out
+ * one would be.
  */
 async function refreshTokens(token) {
   let claims;
@@ -560,15 +883,27 @@ async function refreshTokens(token) {
     throw ApiError.unauthorized(error.message, error.code);
   }
 
+  const active = await refreshTokenService.isActive({
+    role: claims.role,
+    accountId: claims.accountId,
+    jti: claims.jti,
+  });
+  if (!active) {
+    throw ApiError.unauthorized('This session has ended. Please sign in again.', 'session_expired');
+  }
+
   const account = await ACCOUNT_MODELS[claims.role].findById(claims.accountId).select('status');
 
   if (!account) {
+    await refreshTokenService.revoke(claims);
     throw ApiError.unauthorized('This account no longer exists.', 'account_missing');
   }
-  if (account.status === 'blocked' || account.status === 'deleted') {
+  if (!isAccountActive(account, claims.role)) {
+    await refreshTokenService.revoke(claims);
     throw ApiError.forbidden('This account is not active.', 'account_blocked');
   }
 
+  await refreshTokenService.revoke(claims);
   return issueTokens(claims.accountId, claims.role);
 }
 
@@ -577,11 +912,17 @@ module.exports = {
   registerAstrologer,
   requestLoginOtp,
   verifyLoginOtp,
+  loginWithApple,
+  loginWithGoogle,
   loginAdmin,
   verifyAdminOtp,
   resendAdminOtp,
+  requestAdminPasswordReset,
+  resendAdminPasswordReset,
+  resetAdminPassword,
   issueTokens,
   refreshTokens,
+  isAccountActive,
   LOGIN_CHANNELS,
   OTP_ROLES,
   /** Shared with the profile endpoints and the tests. */

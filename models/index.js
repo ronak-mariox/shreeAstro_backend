@@ -14,6 +14,8 @@ const Astrologer = require('./Astrologer');
 const AstrologerProfile = require('./AstrologerProfile');
 const Admin = require('./Admin');
 const chat = require('./Chat');
+const ChatBillingTick = require('./ChatBillingTick');
+const AssistantMemory = require('./AssistantMemory');
 const WalletTransaction = require('./WalletTransaction');
 const Withdrawal = require('./Withdrawal');
 const Notification = require('./Notification');
@@ -21,6 +23,11 @@ const Article = require('./Article');
 const AuditLog = require('./AuditLog');
 const Settings = require('./Settings');
 const SupportTicket = require('./SupportTicket');
+const BirthProfile = require('./BirthProfile');
+const KundliCache = require('./KundliCache');
+const GeoCache = require('./GeoCache');
+const ApiUsage = require('./ApiUsage');
+const HoroscopeCache = require('./HoroscopeCache');
 
 module.exports = {
   User,
@@ -29,6 +36,8 @@ module.exports = {
   AstrologerProfile,
   Admin,
   ...chat,
+  ChatBillingTick,
+  AssistantMemory,
   WalletTransaction,
   Withdrawal,
   Notification,
@@ -36,6 +45,11 @@ module.exports = {
   AuditLog,
   Settings,
   SupportTicket,
+  BirthProfile,
+  KundliCache,
+  GeoCache,
+  ApiUsage,
+  HoroscopeCache,
   constants,
   common,
 };

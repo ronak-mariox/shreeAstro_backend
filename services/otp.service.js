@@ -14,12 +14,14 @@
  * is a million guesses, which a plain hash would give up instantly, so the hash
  * is an HMAC keyed with a server secret that Redis never sees.
  *
- * NOTE — there is no SMS or email provider yet. Until there is:
- *   - the code is printed to the server log,
- *   - it is returned in the API response in development,
- *   - and the master code in config/env.js always works.
- * When a provider is added, send the code in `deliverOtp` and delete the
- * master-code check in `verifyOtp`. Nothing else changes.
+ * NOTE — SMS/email delivery is best-effort, layered on top of what already
+ * worked before either existed:
+ *   - the code is always printed to the server log,
+ *   - it is always returned in the API response in development,
+ *   - the master code in config/env.js always works, unchanged,
+ *   - and `deliverOtp` now *also* tries MSG91 (phone) / SMTP (email) when an
+ *     admin has configured one on the Third Parties tab. Unconfigured, or a
+ *     failed send, changes nothing above — this never throws.
  */
 
 const crypto = require('crypto');
@@ -27,6 +29,8 @@ const crypto = require('crypto');
 const env = require('../config/env');
 const { OTP_TTL_SECONDS, OTP_RESEND_SECONDS, OTP_MAX_ATTEMPTS } = require('../config/constants');
 const { redis } = require('../config/redis');
+const smsService = require('./sms.service');
+const emailService = require('./email.service');
 
 const OTP_LENGTH = 6;
 
@@ -49,13 +53,30 @@ function hashCode(code) {
 }
 
 /**
- * Sends the code.
- *
- * There is no provider yet, so this only logs it. Put the SMS / email call
- * here — everything above and below stays the same.
+ * Sends the code: always logged, and best-effort delivered for real when a
+ * provider is configured. A delivery failure is caught and logged here, not
+ * thrown — the code is already stored and verifiable regardless of whether
+ * it reached the destination.
  */
 async function deliverOtp({ channel, destination, code, purpose }) {
   console.log(`[otp] ${purpose} code for ${channel} ${destination}: ${code}`);
+
+  try {
+    const result =
+      channel === 'phone'
+        ? await smsService.sendOtpSms({ mobile: destination, otp: code })
+        : await emailService.sendEmail({
+            to: destination,
+            subject: 'Your Shree Astro verification code',
+            text: `Your verification code is ${code}. It expires in ${Math.round(OTP_TTL_SECONDS / 60)} minutes.`,
+          });
+
+    if (result.sent) {
+      console.log(`[otp] delivered via ${channel === 'phone' ? 'MSG91' : 'SMTP'} to ${destination}`);
+    }
+  } catch (error) {
+    console.error('[otp] delivery attempt failed:', error.message);
+  }
 }
 
 /**
