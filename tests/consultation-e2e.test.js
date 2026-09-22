@@ -260,7 +260,7 @@ function headerSeconds(state, deviceNowMs, deviceSkewMs) {
   }
 
   /* ================================================================ package */
-  section('PACKAGE (10% admin discount): choose → intake → request → accept → countdown → per-minute → low balance → recharge → end');
+  section('PACKAGE (10% admin discount): choose → intake → request → accept → countdown → pause → recharge → approve → end');
   {
     await settingsService.update({ packageDiscounts: [{ minutes: 3, discountPercent: 10 }] });
     const a = await actors({ balance: 70 }); // 3-min package at ₹54 → ₹16 left: not enough for a ₹20 minute after it
@@ -289,36 +289,39 @@ function headerSeconds(state, deviceNowMs, deviceSkewMs) {
     await chatService.runBillingSweep(seconds(endsAt, -25));
     const w = await warned;
     check('~30s before the end: user gets the existing low-balance warning (needs ₹20, has ₹16)', w.requiredAmount === 20 && w.balanceRemaining === 16, w);
-    check('...and no separate package popup event of any kind', !a.userEvents.has('chat:package_ended') && !a.userEvents.has(CHAT_EVENTS.PACKAGE_WARNING));
 
-    // Package runs out → continues per-minute; can't pay → paused on both.
-    const switched = once(a.userSocket, CHAT_EVENTS.PER_MINUTE_STARTED, 4000, p => p.chatId === chatId);
+    // Package runs out → paused on both sides, nothing charged, nothing affordable yet.
     const pausedBoth = Promise.all([
-      once(a.userSocket, CHAT_EVENTS.LOW_BALANCE, 4000, p => p.paused === true),
-      once(a.astroSocket, CHAT_EVENTS.LOW_BALANCE, 4000, p => p.paused === true),
+      once(a.userSocket, CHAT_EVENTS.PACKAGE_ENDED, 4000, p => p.chatId === chatId),
+      once(a.astroSocket, CHAT_EVENTS.PACKAGE_ENDED, 4000, p => p.chatId === chatId),
     ]);
     await chatService.runBillingSweep(seconds(endsAt, 1));
-    await switched;
-    await pausedBoth;
-    check('package over → switched to per-minute and, short on money, paused on both sides', true);
-    const { user: after } = await headersAgree(a, chatId, 'after the package');
-    check('both now read the per-minute phase', after.package?.phase === 'per_minute' && after.paused === true);
+    const [endedForUser] = await pausedBoth;
+    check('package over → paused on BOTH sides (no auto per-minute)', true);
+    check('the user is told nothing is affordable yet → recharge first', endedForUser.canContinue === false && endedForUser.perMinuteAffordable === false);
+    check('nothing charged at the end', (await a.asUser('GET', '/wallet')).body.wallet.balance === 16);
+    const blockedSend = await emitAck(a.userSocket, CHAT_EVENTS.SEND, { chatId, type: 'text', content: { text: 'hello?' } });
+    check('messages are blocked while paused', /choose how to continue/.test(blockedSend.error || ''), blockedSend);
+    const { user: pausedState } = await headersAgree(a, chatId, 'paused after the package');
+    check('both apps read the paused phase', pausedState.package?.phase === 'awaiting_choice');
 
-    const resumedBoth = Promise.all([
-      once(a.userSocket, CHAT_EVENTS.LOW_BALANCE, 4000, p => p.paused === false),
-      once(a.astroSocket, CHAT_EVENTS.LOW_BALANCE, 4000, p => p.paused === false),
-    ]);
+    // Recharge from the existing popup, then the user approves how to continue.
     const order = await a.asUser('POST', '/wallet/topup', { amount: 100 });
     await a.asUser('POST', '/wallet/topup/confirm', { transactionId: order.body.transactionId });
-    await resumedBoth;
-    check('recharge from the existing popup resumes the chat on both sides', true);
+    const afterRecharge = await a.asUser('GET', `/chats/${chatId}`);
+    check('after recharging, the options are affordable, still waiting for approval',
+      afterRecharge.body.package.phase === 'awaiting_choice' && afterRecharge.body.package.canContinue === true && afterRecharge.body.package.perMinuteAffordable === true);
 
-    const resumed = await ChatSession.findById(chatId);
-    const tick = once(a.astroSocket, CHAT_EVENTS.TICK, 4000, p => p.chatId === chatId);
-    await chatService.runBillingSweep(seconds(resumed.lastBilledAt, 61));
-    await tick;
+    const resumedBoth = Promise.all([
+      once(a.userSocket, CHAT_EVENTS.PER_MINUTE_STARTED, 4000, p => p.chatId === chatId),
+      once(a.astroSocket, CHAT_EVENTS.PER_MINUTE_STARTED, 4000, p => p.chatId === chatId),
+    ]);
+    const cont = await a.asUser('POST', `/chats/${chatId}/continue`, { mode: 'per_minute' });
+    await resumedBoth;
+    check('user chooses per-minute → both sides resume, first minute charged (₹116 → ₹96)', cont.status === 200 && cont.body.balanceRemaining === 96, cont.body);
+    await chatBothWays(a, chatId);
+    await headersAgree(a, chatId, 'per-minute after the choice');
     const bal2 = (await a.asUser('GET', '/wallet')).body.wallet.balance;
-    check('first per-minute minute billed after the recharge (₹116 → ₹96)', bal2 === 96, bal2);
 
     const endedBoth = Promise.all([once(a.userSocket, CHAT_EVENTS.ENDED), once(a.astroSocket, CHAT_EVENTS.ENDED)]);
     const end = await a.asAstro('POST', `/chats/${chatId}/end`, { reason: 'astrologer_ended' });
@@ -331,13 +334,13 @@ function headerSeconds(state, deviceNowMs, deviceSkewMs) {
     const earned = (await a.asAstro('GET', '/wallet')).body.earnings.balance;
     const expected = (54 - Math.round(54 * 0.25)) + final.minutesBilled * 15;
     check(`astrologer earnings = package share + per-minute share (₹${expected})`, earned === expected, { earned, expected });
-    markScenario('pkg', 'Package end to end (discount, countdown, auto per-minute, low balance, recharge, end)', end.status === 200 && bal2 === 96);
+    markScenario('pkg', 'Package end to end (discount, countdown, pause, recharge, approve per-minute, end)', end.status === 200 && bal2 === 96);
     a.userSocket.close(); a.astroSocket.close();
     await settingsService.update({ packageDiscounts: [3, 5, 10, 20].map(minutes => ({ minutes, discountPercent: 0 })) });
   }
 
   /* ================================================================ package, enough money */
-  section('PACKAGE with enough money: countdown warning, then per-minute without interruption');
+  section('PACKAGE with enough money: warning, pause, choose another package, then per-minute');
   {
     const a = await actors({ balance: 500 });
     const { chatId } = await requestAndAccept(a, { mode: 'package', packageMinutes: 5, quotedPrice: 100 });
@@ -348,20 +351,35 @@ function headerSeconds(state, deviceNowMs, deviceSkewMs) {
     ]);
     await chatService.runBillingSweep(seconds(chat.packageState.endsAt, -20));
     const [warning] = await warnBoth;
-    check('~30s out both get "package ending, then ₹20/min"', warning.ratePerMinute === 20 && warning.secondsLeft === 20, warning);
-    check('no low-balance warning when the wallet is fine', !a.userEvents.has(CHAT_EVENTS.LOW_BALANCE));
-    const tickBoth = Promise.all([
-      once(a.userSocket, CHAT_EVENTS.TICK, 4000, p => p.chatId === chatId),
-      once(a.astroSocket, CHAT_EVENTS.TICK, 4000, p => p.chatId === chatId),
+    check('~30s out both get the package-ending notice', warning.secondsLeft === 20, warning);
+
+    const pausedBoth = Promise.all([
+      once(a.userSocket, CHAT_EVENTS.PACKAGE_ENDED, 4000, p => p.chatId === chatId),
+      once(a.astroSocket, CHAT_EVENTS.PACKAGE_ENDED, 4000, p => p.chatId === chatId),
     ]);
     await chatService.runBillingSweep(seconds(chat.packageState.endsAt, 1));
-    const [t] = await tickBoth;
-    check('at the end: per-minute starts and the first minute is billed (₹400 → ₹380)', t.balanceRemaining === 380, t);
+    const [ended] = await pausedBoth;
+    check('at the end: paused on both sides, options offered (enough money)', ended.canContinue === true && ended.packages.length === 4);
+    check('nothing auto-charged', (await a.asUser('GET', '/wallet')).body.wallet.balance === 400);
+
+    const extendedBoth = Promise.all([
+      once(a.userSocket, CHAT_EVENTS.PACKAGE_EXTENDED, 4000, p => p.chatId === chatId),
+      once(a.astroSocket, CHAT_EVENTS.PACKAGE_EXTENDED, 4000, p => p.chatId === chatId),
+    ]);
+    const ext = await a.asUser('POST', `/chats/${chatId}/continue`, { mode: 'package', packageMinutes: 3, quotedPrice: 60 });
+    await extendedBoth;
+    check('user approves another 3-min package → both sides resume (₹400 → ₹340)', ext.status === 200 && ext.body.balanceRemaining === 340, ext.body);
     await chatBothWays(a, chatId);
-    await headersAgree(a, chatId, 'package → per-minute');
+    const { user: st } = await headersAgree(a, chatId, 'second package running');
+    check('both read the new package countdown', st.package.phase === 'package');
+
+    const second = await ChatSession.findById(chatId);
+    await chatService.runBillingSweep(seconds(second.packageState.endsAt, 1));
+    const cont = await a.asUser('POST', `/chats/${chatId}/continue`, { mode: 'per_minute' });
+    check('second package ends → user approves per-minute (₹340 → ₹320)', cont.status === 200 && cont.body.balanceRemaining === 320, cont.body);
     const end = await a.asUser('POST', `/chats/${chatId}/end`, {});
     check('ends cleanly', end.status === 200);
-    markScenario('pkg-ok', 'Package with enough money → per-minute without interruption', end.status === 200 && t.balanceRemaining === 380);
+    markScenario('pkg-ok', 'Package with enough money → pause → another package → pause → per-minute', end.status === 200 && cont.body.balanceRemaining === 320);
     a.userSocket.close(); a.astroSocket.close();
   }
 

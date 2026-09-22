@@ -50,6 +50,22 @@ const request = asyncHandler(async (req, res) => {
   });
 });
 
+/**
+ * POST /api/v1/chats/:chatId/continue — after a package ran out, the seeker
+ * chooses how to go on: `{ mode: 'per_minute' }` or
+ * `{ mode: 'package', packageMinutes, quotedPrice }`.
+ */
+const continueAfterPackage = asyncHandler(async (req, res) => {
+  const result = await chatService.continueConsultation({
+    chatId: req.params.chatId,
+    userId: req.account.accountId,
+    mode: req.body.mode,
+    packageMinutes: req.body.packageMinutes,
+    quotedPrice: req.body.quotedPrice,
+  });
+  return res.json(result);
+});
+
 /** POST /api/v1/chats/:chatId/accept — the astrologer takes it. */
 const accept = asyncHandler(async (req, res) => {
   const chat = await chatService.acceptChat({
@@ -201,4 +217,4 @@ const askAi = asyncHandler(async (req, res) => {
   return res.status(201).json(result);
 });
 
-module.exports = { aiThread, askAi, precheck, state, request, accept, reject, cancel, end, rate, list, messages, send };
+module.exports = { aiThread, askAi, precheck, state, request, continueAfterPackage, accept, reject, cancel, end, rate, list, messages, send };

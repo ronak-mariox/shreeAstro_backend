@@ -31,6 +31,8 @@ router.post('/precheck', authorize('user'), chatValidator.precheck, chatControll
 /** The seeker's side. */
 router.post('/', authorize('user'), chatValidator.request, chatController.request);
 router.post('/:chatId/cancel', authorize('user'), chatController.cancel);
+/** After a package runs out: per-minute or another package. */
+router.post('/:chatId/continue', authorize('user'), chatValidator.continueAfterPackage, chatController.continueAfterPackage);
 router.post('/:chatId/rate', authorize('user'), chatController.rate);
 
 /** The astrologer's side. */

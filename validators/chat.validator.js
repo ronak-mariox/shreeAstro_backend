@@ -34,10 +34,19 @@ const request = [
   validate,
 ];
 
+/** POST /chats/:chatId/continue */
+const continueAfterPackage = [
+  param('chatId').isMongoId().withMessage('Unknown chat.'),
+  body('mode').isIn(['per_minute', 'package']).withMessage('Choose per-minute or a package.'),
+  body('packageMinutes').if(body('mode').equals('package')).isInt({ min: 1 }).withMessage('Choose a package.'),
+  body('quotedPrice').optional({ values: 'null' }).isFloat({ min: 0 }).withMessage('Invalid price.'),
+  validate,
+];
+
 /** GET /chats/:chatId */
 const chatIdParam = [
   param('chatId').isMongoId().withMessage('Unknown chat.'),
   validate,
 ];
 
-module.exports = { precheck, request, chatIdParam };
+module.exports = { precheck, request, continueAfterPackage, chatIdParam };

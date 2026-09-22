@@ -702,8 +702,9 @@ async function billOneMinute(chat, now, session) {
  * Buys one package on a session: debits the seeker the package price (at the
  * session's own frozen rate), records it in the ChatPackagePurchase ledger,
  * and sets `packageState.endsAt` to `now + minutes`. Every write takes
- * `session`, so it lives or dies with the caller's transaction — acceptChat,
- * together with the session going active.
+ * `session`, so it lives or dies with the caller's transaction — acceptChat
+ * (with the session going active) or continueConsultation (another package
+ * after one ran out).
  *
  * The astrologer is NOT credited here; their share of package money is
  * settled once at the end (settlePackageEarning), so a future unused-minutes
@@ -782,15 +783,22 @@ async function purchasePackage(chat, pkg, kind, now, session) {
     purchasedAt: now,
   };
 
-  await ChatSession.updateOne(
-    { _id: chat._id },
+  /** An extension only lands while the seeker is actually being asked — a stale or doubled answer can't charge again. */
+  const filter = kind === 'extension'
+    ? { _id: chat._id, status: 'active', 'packageState.awaitingChoiceSince': { $ne: null }, 'packageState.perMinuteStartedAt': null }
+    : { _id: chat._id };
+  const updated = await ChatSession.updateOne(
+    filter,
     {
       $push: { 'billing.packages': entry },
       $inc: { 'billing.amountCharged': amount, 'billing.packageAmountCharged': amount },
-      $set: { 'packageState.endsAt': endsAt, 'packageState.warnedAt': null },
+      $set: { 'packageState.endsAt': endsAt, 'packageState.warnedAt': null, 'packageState.awaitingChoiceSince': null },
     },
     { session },
   );
+  if (updated.matchedCount === 0) {
+    throw new AbortBilling({ billed: false, reason: 'not_awaiting_choice' });
+  }
 
   /** Kept in sync in memory too — acceptChat saves this same object right after. */
   chat.billing.packages = [...(chat.billing.packages || []), entry];
@@ -798,6 +806,7 @@ async function purchasePackage(chat, pkg, kind, now, session) {
   chat.billing.packageAmountCharged = (chat.billing.packageAmountCharged || 0) + amount;
   chat.packageState.endsAt = endsAt;
   chat.packageState.warnedAt = null;
+  chat.packageState.awaitingChoiceSince = null;
 
   return { billed: true, seq, amount, balanceRemaining, endsAt };
 }
@@ -947,20 +956,21 @@ async function tickOneSession(chat, now) {
 }
 
 /**
- * One package session's turn at the sweep. Nothing is ever charged here while
- * package time lasts:
+ * One package session's turn at the sweep. Nothing is ever charged here:
  *
  *   - `packageWarningSeconds` before the package runs out, warn once. If the
- *     wallet can't cover even one per-minute minute after it, the warning is
- *     the ordinary per-minute low-balance one (CHAT_EVENTS.LOW_BALANCE), so
- *     the app shows its existing Low Balance banner / Recharge popup;
- *     otherwise it is a plain "package ends soon, then ₹X/min" notice.
- *   - once it has run out, the session switches to per-minute by itself
- *     (switchPackageToPerMinute) and the normal per-minute meter takes over —
- *     including its own pause-on-empty-wallet and top-up-to-resume handling.
+ *     wallet can't cover even one per-minute minute, the warning is the
+ *     ordinary low-balance one (CHAT_EVENTS.LOW_BALANCE), so the app shows
+ *     its existing Low Balance banner / Recharge popup; otherwise it is a
+ *     plain "package ends soon" notice.
+ *   - once it has run out, the session PAUSES (openContinueChoice): the
+ *     clock stops, messages are refused, nothing is charged, and the seeker
+ *     is asked how to continue — per-minute or another package
+ *     (continueConsultation). Nothing is billed until they choose. Like the
+ *     per-minute balance pause there is no timeout; either side can end it.
  *
  * Both transitions are conditional updates, so overlapping sweeps can't warn
- * twice or switch twice.
+ * twice or pause twice.
  */
 async function tickPackageSession(chat, now) {
   const chatId = String(chat._id);
@@ -968,11 +978,14 @@ async function tickPackageSession(chat, now) {
   if (!state.endsAt) {
     return { chatId, action: 'package_not_started' };
   }
+  if (state.awaitingChoiceSince) {
+    return { chatId, action: 'awaiting_choice' };
+  }
 
   const msLeft = state.endsAt.getTime() - now.getTime();
 
   if (msLeft <= 0) {
-    return switchPackageToPerMinute(chat, now);
+    return openContinueChoice(chat, now);
   }
 
   if (msLeft <= env.consultation.packageWarningSeconds * 1000 && !state.warnedAt) {
@@ -1013,47 +1026,186 @@ async function tickPackageSession(chat, now) {
 }
 
 /**
- * The package has run out: from its end time on, the session is billed per
- * minute exactly like a per-minute session. `lastBilledAt` is set a minute
- * before the package end so the per-minute tick finds the first per-minute
- * minute due at the package end — and it is billed right here, in this same
- * sweep, by the ordinary per-minute path (tickOneSession). If the wallet
- * can't cover it, that path pauses the session and sends its usual
- * low-balance event; a top-up resumes it (resumePausedSessionsForUser), same
- * as any per-minute chat.
+ * What the seeker can continue with right now, priced at the session's own
+ * frozen rate and the admin's current package discounts, checked against
+ * their current balance — carried on the package-ended event and on every
+ * state read / rejoin while the choice is open.
  */
-async function switchPackageToPerMinute(chat, now) {
-  const chatId = String(chat._id);
-  const switchedAt = chat.packageState.endsAt;
-  const anchor = new Date(switchedAt.getTime() - TICK_INTERVAL_MS);
+async function continueOptionsFor(chat) {
+  const rate = chat.billing.ratePerMinute;
+  const balance = await balanceFor(chat.user);
+  const packages = packageQuotes(rate, balance, await currentPackageDiscounts());
+  const perMinuteAffordable = balance >= rate;
+  return {
+    ratePerMinute: rate,
+    balanceRemaining: balance,
+    perMinuteAffordable,
+    packages,
+    /** False when nothing at all is affordable — the app shows its recharge flow before the choice. */
+    canContinue: perMinuteAffordable || packages.some(quote => quote.affordable),
+  };
+}
 
+/**
+ * The package has run out: pause the session and ask the seeker how to
+ * continue. Nothing is charged here or while paused.
+ */
+async function openContinueChoice(chat, now) {
+  const chatId = String(chat._id);
   const claimed = await ChatSession.updateOne(
     {
       _id: chat._id,
       status: 'active',
-      'packageState.perMinuteStartedAt': null,
-      'packageState.endsAt': switchedAt,
+      'packageState.awaitingChoiceSince': null,
+      'packageState.endsAt': chat.packageState.endsAt,
     },
-    { $set: { 'packageState.perMinuteStartedAt': switchedAt, lastBilledAt: anchor, nextMinuteChecked: false } },
+    { $set: { 'packageState.awaitingChoiceSince': now } },
   );
   if (claimed.modifiedCount === 0) {
-    return { chatId, action: 'package_running' };
+    return { chatId, action: 'awaiting_choice' };
   }
-  chat.packageState.perMinuteStartedAt = switchedAt;
-  chat.lastBilledAt = anchor;
-  chat.nextMinuteChecked = false;
+  chat.packageState.awaitingChoiceSince = now;
+
+  emit(roomFor(chat._id), CHAT_EVENTS.PACKAGE_ENDED, {
+    chatId,
+    pausedSince: now,
+    serverTime: now,
+    ...(await continueOptionsFor(chat)),
+  });
+  await announce(chat._id, 'Package time is over. The consultation is paused until the seeker chooses how to continue.', 'package_ended');
+  return { chatId, action: 'awaiting_choice_opened' };
+}
+
+/**
+ * The seeker's answer to "how would you like to continue?" after a package
+ * ran out:
+ *
+ *   { mode: 'per_minute' }  — the ordinary per-minute meter runs from now,
+ *                             its first minute charged upfront (as on
+ *                             accept), in the same transaction as the switch.
+ *   { mode: 'package', packageMinutes, quotedPrice } — another package,
+ *                             priced at the session's frozen rate and the
+ *                             current admin discount, wallet re-checked,
+ *                             charged in one transaction; it runs from now.
+ *
+ * Either way the pause ends the moment the charge lands. Refused (nothing
+ * charged) if the session isn't waiting on a choice, if the wallet can't
+ * cover it (`insufficient_balance` + shortfall, so the app can open its
+ * recharge popup), or if the shown price is stale (`price_changed`).
+ */
+async function continueConsultation({ chatId, userId, mode, packageMinutes, quotedPrice }) {
+  const [chat, role] = await participantChat(chatId, userId);
+  if (role !== 'user') {
+    throw ApiError.forbidden('Only the seeker can choose how to continue.');
+  }
+  if (chat.status !== 'active') {
+    throw ApiError.badRequest(`This chat is already ${chat.status}.`);
+  }
+  if (!isPackagePhase(chat) || !chat.packageState?.awaitingChoiceSince) {
+    throw ApiError.conflict('This consultation is not waiting for a choice.', undefined, 'not_awaiting_choice');
+  }
 
   const rate = chat.billing.ratePerMinute;
+  const balance = await balanceFor(chat.user);
+  const now = new Date();
+  let outcome;
+  let pkg = null;
+
+  if (mode === 'package') {
+    ({ pkg } = quotePackage({ packageMinutes, quotedPrice, ratePerMinute: rate, balance, discounts: await currentPackageDiscounts() }));
+    const session = await mongoose.startSession();
+    try {
+      await session.withTransaction(async () => {
+        outcome = await purchasePackage(chat, pkg, 'extension', now, session);
+      });
+    } catch (error) {
+      if (error instanceof AbortBilling) outcome = error.outcome;
+      else throw error;
+    } finally {
+      await session.endSession();
+    }
+  } else if (mode === 'per_minute') {
+    if (balance < rate) {
+      throw ApiError.badRequest(
+        `You need ₹${rate - balance} more in your wallet to continue per-minute (₹${rate}/min).`,
+        undefined,
+        'insufficient_balance',
+      ).withDetails({ price: rate, balance, shortfallAmount: rate - balance });
+    }
+    const session = await mongoose.startSession();
+    try {
+      await session.withTransaction(async () => {
+        const claimed = await ChatSession.updateOne(
+          { _id: chat._id, status: 'active', 'packageState.awaitingChoiceSince': { $ne: null }, 'packageState.perMinuteStartedAt': null },
+          { $set: { 'packageState.perMinuteStartedAt': now, 'packageState.awaitingChoiceSince': null } },
+          { session },
+        );
+        if (claimed.modifiedCount === 0) {
+          throw new AbortBilling({ billed: false, reason: 'not_awaiting_choice' });
+        }
+        const minute = await billOneMinute(chat, now, session);
+        if (!minute.billed) {
+          /** Roll the switch back too — never "per-minute" without the minute that pays for it. */
+          throw new AbortBilling(minute);
+        }
+        outcome = minute;
+      });
+    } catch (error) {
+      if (error instanceof AbortBilling) outcome = error.outcome;
+      else throw error;
+    } finally {
+      await session.endSession();
+    }
+  } else {
+    throw ApiError.badRequest('Choose per-minute or a package.', { mode: 'Unknown choice.' }, 'invalid_choice');
+  }
+
+  if (!outcome?.billed) {
+    if (outcome?.reason === 'insufficient_balance') {
+      throw ApiError.badRequest('Not enough balance for that.', undefined, 'insufficient_balance');
+    }
+    throw ApiError.conflict('This consultation is not waiting for a choice.', undefined, 'not_awaiting_choice');
+  }
+
+  if (mode === 'package') {
+    emit(roomFor(chat._id), CHAT_EVENTS.PACKAGE_EXTENDED, {
+      chatId: String(chat._id),
+      packageMinutes: pkg.minutes,
+      amount: outcome.amount,
+      endsAt: outcome.endsAt,
+      serverTime: now,
+      balanceRemaining: outcome.balanceRemaining,
+    });
+    await announce(chat._id, `The seeker continued with a ${pluralMinutes(pkg.minutes)} package.`, 'package_extended');
+    return {
+      chatId: String(chat._id),
+      mode: 'package',
+      packageMinutes: pkg.minutes,
+      amount: outcome.amount,
+      endsAt: outcome.endsAt,
+      serverTime: now,
+      balanceRemaining: outcome.balanceRemaining,
+    };
+  }
+
+  chat.packageState.perMinuteStartedAt = now;
+  chat.packageState.awaitingChoiceSince = null;
   emit(roomFor(chat._id), CHAT_EVENTS.PER_MINUTE_STARTED, {
-    chatId,
-    perMinuteStartedAt: switchedAt,
+    chatId: String(chat._id),
+    perMinuteStartedAt: now,
     serverTime: now,
     ratePerMinute: rate,
+    balanceRemaining: outcome.balanceRemaining,
   });
-  await announce(chat._id, `Package time is over. The consultation continues at ₹${rate}/min.`, 'per_minute_started');
-
-  const perMinute = await tickOneSession(chat, now);
-  return { ...perMinute, chatId, switchedToPerMinute: true };
+  await announce(chat._id, `The seeker continued per-minute at ₹${rate}/min.`, 'per_minute_started');
+  return {
+    chatId: String(chat._id),
+    mode: 'per_minute',
+    perMinuteStartedAt: now,
+    serverTime: now,
+    ratePerMinute: rate,
+    balanceRemaining: outcome.balanceRemaining,
+  };
 }
 
 /* -------------------------------------------------------------------------- */
@@ -1113,7 +1265,7 @@ async function resumeSessionsForAstrologer(astrologerId, now = new Date()) {
       nextMinuteChecked: false,
     };
     /** A package's clock is pushed forward by the outage too — the seeker keeps every paid second. */
-    if (isPackagePhase(chat) && chat.packageState?.endsAt) {
+    if (isPackagePhase(chat) && chat.packageState?.endsAt && !chat.packageState.awaitingChoiceSince) {
       set['packageState.endsAt'] = new Date(chat.packageState.endsAt.getTime() + pausedMs);
     }
 
@@ -1677,16 +1829,21 @@ function toChatRow(chat, viewerRole) {
  * Where a package session stands, for a screen opening or reconnecting —
  * `serverTime` (sent alongside) lets the app count down against the server's
  * clock rather than trust its own. `undefined` for a per-minute session.
- * `phase` is 'package' while package time lasts and 'per_minute' once it has
- * run out and the session is billing per minute.
+ * `phase` is 'package' while package time lasts, 'awaiting_choice' once it
+ * has run out and the session is paused on the seeker's choice, and
+ * 'per_minute' once they chose to continue per-minute.
  */
-function packageViewFor(chat) {
+async function packageViewFor(chat) {
   if (chat.billing?.mode !== 'package') {
     return undefined;
   }
   const state = chat.packageState || {};
+  const phase = state.perMinuteStartedAt ? 'per_minute' : state.awaitingChoiceSince ? 'awaiting_choice' : 'package';
   return {
-    phase: state.perMinuteStartedAt ? 'per_minute' : 'package',
+    phase,
+    awaitingChoiceSince: state.awaitingChoiceSince,
+    /** While paused on the choice: what the seeker can continue with (so a reopened app can ask again). */
+    ...(phase === 'awaiting_choice' && chat.status === 'active' ? await continueOptionsFor(chat) : {}),
     endsAt: state.endsAt,
     warningSeconds: env.consultation.packageWarningSeconds,
     perMinuteStartedAt: state.perMinuteStartedAt,
@@ -1730,7 +1887,7 @@ async function getSessionState({ chatId, accountId }) {
     endedAt: chat.endedAt,
     endReason: chat.endReason,
     billingMode: chat.billing.mode,
-    package: packageViewFor(chat),
+    package: await packageViewFor(chat),
     serverTime: new Date(),
   };
 }
@@ -1870,7 +2027,7 @@ async function joinChat({ chatId, accountId, lastSeq = 0 }) {
     messages: missed.map(message => message.toSocketPayload()),
     /** Package sessions: the true current package clock/prompt, for the same reason as `paused` above. */
     billingMode: chat.billing?.mode,
-    package: packageViewFor(chat),
+    package: await packageViewFor(chat),
     serverTime: new Date(),
   };
 }
@@ -1889,6 +2046,10 @@ async function sendMessage({ chatId, accountId, type = 'text', content, replyTo,
   const [chat, role] = await participantChat(chatId, accountId);
   if (!chat.acceptsMessages()) {
     throw ApiError.badRequest(`This chat is ${chat.status}.`);
+  }
+  /** Paused after a package ran out — nothing is billed, so nothing is said, until the seeker chooses how to continue. */
+  if (isPackagePhase(chat) && chat.packageState?.awaitingChoiceSince) {
+    throw ApiError.badRequest('The package time is over — choose how to continue first.', undefined, 'awaiting_choice');
   }
 
   try {
@@ -1930,7 +2091,7 @@ module.exports = {
   purchasePackage,
   tickOneSession,
   tickPackageSession,
-  switchPackageToPerMinute,
+  continueConsultation,
   isPackagePhase,
   tickAstrologerDisconnectGrace,
   pauseSessionsForAstrologer,
