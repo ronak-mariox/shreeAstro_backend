@@ -47,8 +47,10 @@ const CHAT_EVENTS = {
   /** Server -> client only, from the astrologer's own socket connecting/disconnecting while a session is active (services/chat.service.js's pauseSessionsForAstrologer/resumeSessionsForAstrologer). */
   ASTROLOGER_LEFT: 'chat:astrologer_left',
   ASTROLOGER_JOINED: 'chat:astrologer_joined',
-  /** Server -> client only, package sessions (config/packages.js): ~30s left, then time up and carrying on per-minute. */
+  /** Server -> client only, package sessions (config/packages.js): ~30s left; time up (session paused on the seeker's choice); continued with another package; continued per-minute. */
   PACKAGE_WARNING: 'chat:package_warning',
+  PACKAGE_ENDED: 'chat:package_ended',
+  PACKAGE_EXTENDED: 'chat:package_extended',
   PER_MINUTE_STARTED: 'chat:per_minute_started',
 };
 
@@ -130,8 +132,8 @@ const chatSessionSchema = new Schema(
     billing: {
       /**
        * How the session was booked — never changes afterwards, so it stays
-       * the record of what the seeker chose. A 'package' session carries on
-       * per-minute once its package runs out and keeps 'package' here;
+       * the record of what the seeker chose. A 'package' session that the
+       * seeker later continues per-minute keeps 'package' here;
        * `packageState.perMinuteStartedAt` is what marks the switch. The rate below is frozen at request time
        * and never re-read from the astrologer's live rate again — a rate
        * change mid-session must never affect a chat already in flight.
@@ -195,7 +197,13 @@ const chatSessionSchema = new Schema(
       endsAt: { type: Date },
       /** Set once the ~30s "running out" warning has gone out for the current package. */
       warnedAt: { type: Date },
-      /** Set when the package ran out (its `endsAt`) — the normal per-minute meter runs from here. */
+      /**
+       * Set the moment a package runs out: the session is paused (clock
+       * stopped, messages refused, nothing billed) until the seeker chooses
+       * per-minute or another package (chat.service.js's continueConsultation).
+       */
+      awaitingChoiceSince: { type: Date },
+      /** Set when the seeker chose to continue per-minute — the normal per-minute meter runs from here. */
       perMinuteStartedAt: { type: Date },
       /** Package seconds paid for but not used when the session ended — the input to the refund policy. */
       unusedSeconds: { type: Number, min: 0 },
