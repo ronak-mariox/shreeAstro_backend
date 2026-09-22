@@ -12,6 +12,7 @@
 const adminService = require('../services/admin.service');
 const auditService = require('../services/audit.service');
 const settingsService = require('../services/settings.service');
+const { packagesWithDiscounts, MAX_PACKAGE_DISCOUNT_PERCENT } = require('../config/packages');
 const integrationsService = require('../services/integrations.service');
 const supportService = require('../services/support.service');
 const asyncHandler = require('../utils/asyncHandler');
@@ -477,9 +478,20 @@ const endConsultation = asyncHandler(async (req, res) => {
 
 /* ------------------------------------------------------------- settings */
 
+/**
+ * Every offered consultation package with its current discount — the
+ * panel's discount table reads this rather than knowing the durations itself.
+ */
+const consultationPackagesFor = settings => packagesWithDiscounts(settings.packageDiscounts);
+
 /** GET /api/v1/admin/settings */
 const getSettings = asyncHandler(async (req, res) => {
-  return res.json({ settings: await settingsService.get() });
+  const settings = await settingsService.get();
+  return res.json({
+    settings,
+    consultationPackages: consultationPackagesFor(settings),
+    maxPackageDiscountPercent: MAX_PACKAGE_DISCOUNT_PERCENT,
+  });
 });
 
 /** PATCH /api/v1/admin/settings */
@@ -493,7 +505,11 @@ const updateSettings = asyncHandler(async (req, res) => {
     details: req.body,
   });
 
-  return res.json({ settings });
+  return res.json({
+    settings,
+    consultationPackages: consultationPackagesFor(settings),
+    maxPackageDiscountPercent: MAX_PACKAGE_DISCOUNT_PERCENT,
+  });
 });
 
 /* ------------------------------------------------------ third parties */

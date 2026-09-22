@@ -25,12 +25,14 @@ const ChatPackagePurchase = require('../models/ChatPackagePurchase');
 const ApiError = require('../utils/ApiError');
 const env = require('../config/env');
 const walletService = require('./wallet.service');
+const settingsService = require('./settings.service');
 const notificationService = require('./notification.service');
 const assistantService = require('./assistant.service');
 const { parseBirthDate, parseBirthTime } = require('./auth.service');
 const { minutesFor } = require('../utils/billing');
 const {
   findPackage,
+  originalPackagePrice,
   packagePrice,
   packageQuotes,
   unusedPackageSeconds,
@@ -122,10 +124,11 @@ function isPackagePhase(chat) {
  * showed them: if it no longer matches — the astrologer changed their rate
  * after the form was opened — the request is refused with `price_changed`
  * and the new price, so the seeker confirms the real figure rather than being
- * charged something they never saw.
+ * charged something they never saw. The same goes for the admin changing a
+ * package's discount (`discounts`, from Settings) in the meantime.
  */
-function quotePackage({ packageMinutes, quotedPrice, ratePerMinute, balance }) {
-  const pkg = findPackage(packageMinutes);
+function quotePackage({ packageMinutes, quotedPrice, ratePerMinute, balance, discounts }) {
+  const pkg = findPackage(packageMinutes, discounts);
   if (!pkg) {
     throw ApiError.badRequest('Choose one of the offered packages.', { packageMinutes: 'Unknown package.' }, 'invalid_package');
   }
@@ -136,7 +139,13 @@ function quotePackage({ packageMinutes, quotedPrice, ratePerMinute, balance }) {
       `The price of the ${pkg.minutes}-minute package is now ₹${price}. Please confirm to continue.`,
       undefined,
       'price_changed',
-    ).withDetails({ packageMinutes: pkg.minutes, price, ratePerMinute });
+    ).withDetails({
+      packageMinutes: pkg.minutes,
+      price,
+      originalPrice: originalPackagePrice(ratePerMinute, pkg),
+      discountPercent: pkg.discountPercent,
+      ratePerMinute,
+    });
   }
 
   if (balance < price) {
@@ -149,6 +158,12 @@ function quotePackage({ packageMinutes, quotedPrice, ratePerMinute, balance }) {
   }
 
   return { pkg, price };
+}
+
+/** The admin's current per-package discounts (Settings → Platform), read through the settings cache. */
+async function currentPackageDiscounts() {
+  const settings = await settingsService.get();
+  return settings?.packageDiscounts || [];
 }
 
 /**
@@ -266,6 +281,7 @@ async function requestChat({ userId, astrologerId, channel = 'chat', intake = {}
       quotedPrice: requestedBilling.quotedPrice,
       ratePerMinute,
       balance: user.wallet.balance,
+      discounts: await currentPackageDiscounts(),
     }));
   } else if (totalAffordableMinutes < MIN_SESSION_MINUTES) {
     /** Less than MIN_SESSION_MINUTES affordable means the wallet can't even cover the minute billed upfront on accept. */
@@ -303,6 +319,13 @@ async function requestChat({ userId, astrologerId, channel = 'chat', intake = {}
       ratePerMinute,
       commissionPercent: astrologer.commissionPercent,
       requestedPackageMinutes: pkg?.minutes,
+      /**
+       * The discount and price the seeker saw and confirmed, locked here so
+       * acceptChat charges exactly this even if the admin changes the
+       * discount while the request waits for the astrologer.
+       */
+      requestedPackageDiscountPercent: pkg?.discountPercent,
+      requestedPackagePrice: pkgPrice,
     },
   });
 
@@ -401,7 +424,9 @@ async function precheckSession({ userId, astrologerId, channel = 'chat' }) {
     shortfallAmount: Math.max(0, (MIN_SESSION_MINUTES - totalAffordableMinutes) * ratePerMinute),
     /** The package options (config/packages.js), priced at this astrologer's real rate for this channel. */
     balance: user.wallet.balance,
-    packages: Number.isFinite(ratePerMinute) && ratePerMinute !== null ? packageQuotes(ratePerMinute, user.wallet.balance) : [],
+    packages: Number.isFinite(ratePerMinute) && ratePerMinute !== null
+      ? packageQuotes(ratePerMinute, user.wallet.balance, await currentPackageDiscounts())
+      : [],
   };
 }
 
@@ -423,10 +448,14 @@ async function acceptChat({ chatId, astrologerId }) {
   }
 
   /** A package session is charged the whole package here instead of minute 1 — same transaction, same all-or-nothing guarantee. */
-  const pkg = chat.billing.mode === 'package' ? findPackage(chat.billing.requestedPackageMinutes) : null;
-  if (chat.billing.mode === 'package' && !pkg) {
+  const offered = chat.billing.mode === 'package' ? findPackage(chat.billing.requestedPackageMinutes) : null;
+  if (chat.billing.mode === 'package' && !offered) {
     throw ApiError.badRequest('This request has no valid package.');
   }
+  /** Charged at the discount locked onto the request (see requestChat), never whatever the admin has set since. */
+  const pkg = offered
+    ? { minutes: offered.minutes, discountPercent: chat.billing.requestedPackageDiscountPercent ?? 0 }
+    : null;
 
   /**
    * The minute-1 debit and the session actually going active live in one
@@ -714,7 +743,8 @@ async function purchasePackage(chat, pkg, kind, now, session) {
   const seq = (chat.billing.packages?.length || 0) + 1;
   const { ratePerMinute } = chat.billing;
   const amount = packagePrice(ratePerMinute, pkg);
-  const title = `${chat.channel === 'call' ? 'Call' : 'Chat'} consultation — ${pkg.minutes}-min package${kind === 'extension' ? ' (extension)' : ''}`;
+  const originalAmount = originalPackagePrice(ratePerMinute, pkg);
+  const title = `${chat.channel === 'call' ? 'Call' : 'Chat'} consultation — ${pkg.minutes}-min package${pkg.discountPercent ? ` (${pkg.discountPercent}% off)` : ''}${kind === 'extension' ? ' (extension)' : ''}`;
 
   let walletTransactionId;
   let balanceRemaining;
@@ -751,6 +781,7 @@ async function purchasePackage(chat, pkg, kind, now, session) {
         minutes: pkg.minutes,
         ratePerMinute,
         discountPercent: pkg.discountPercent,
+        originalAmount,
         amount,
         walletTransaction: walletTransactionId,
         purchasedAt: now,
@@ -771,6 +802,7 @@ async function purchasePackage(chat, pkg, kind, now, session) {
     minutes: pkg.minutes,
     ratePerMinute,
     discountPercent: pkg.discountPercent,
+    originalAmount,
     amount,
     walletTransaction: walletTransactionId,
     purchasedAt: now,
@@ -1011,7 +1043,7 @@ async function tickPackageSession(chat, now) {
       ratePerMinute: rate,
       balanceRemaining: balance,
       perMinuteAffordable: balance >= rate,
-      packages: packageQuotes(rate, balance),
+      packages: packageQuotes(rate, balance, await currentPackageDiscounts()),
     });
     await announce(chat._id, 'Package time is over. Waiting for the seeker to extend or end the consultation.', 'package_ended');
     return { chatId, action: 'extension_prompted' };
@@ -1069,6 +1101,7 @@ async function extendPackage({ chatId, userId, packageMinutes, quotedPrice }) {
     quotedPrice,
     ratePerMinute: chat.billing.ratePerMinute,
     balance: await balanceFor(chat.user),
+    discounts: await currentPackageDiscounts(),
   });
 
   const now = new Date();
@@ -1575,6 +1608,11 @@ async function settlePackageEnd(chat, { now, endedBy, reason }) {
  * ever: the `packageEarningSettled` flag is claimed atomically before the
  * credit, so two concurrent ends can't both pay.
  */
+/**
+ * The share is taken from what the seeker actually paid — i.e. after any
+ * admin package discount — so a discount is borne by platform and astrologer
+ * in proportion to the commission split.
+ */
 async function settlePackageEarning(chat) {
   const base = (chat.billing.packageAmountCharged || 0) - (chat.billing.packageRefundAmount || 0);
   const claimed = await ChatSession.updateOne(
@@ -1810,6 +1848,8 @@ async function packageViewFor(chat, now = new Date()) {
       seq: entry.seq,
       kind: entry.kind,
       minutes: entry.minutes,
+      discountPercent: entry.discountPercent,
+      originalAmount: entry.originalAmount,
       amount: entry.amount,
       purchasedAt: entry.purchasedAt,
     })),
@@ -1819,7 +1859,7 @@ async function packageViewFor(chat, now = new Date()) {
     const balance = await balanceFor(chat.user);
     view.balanceRemaining = balance;
     view.perMinuteAffordable = balance >= chat.billing.ratePerMinute;
-    view.packages = packageQuotes(chat.billing.ratePerMinute, balance);
+    view.packages = packageQuotes(chat.billing.ratePerMinute, balance, await currentPackageDiscounts());
   }
   return view;
 }

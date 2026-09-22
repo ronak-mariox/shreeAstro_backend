@@ -21,7 +21,9 @@ const chatPackagePurchaseSchema = new Schema(
     minutes: { type: Number, required: true, min: 1 },
     ratePerMinute: { type: Number, required: true, min: 0 },
     discountPercent: { type: Number, default: 0, min: 0, max: 100 },
-    /** Rupees actually debited for this package. */
+    /** minutes × rate, before the admin's package discount. */
+    originalAmount: { type: Number, min: 0 },
+    /** Rupees actually debited for this package (after the discount). */
     amount: { type: Number, required: true, min: 0 },
     walletTransaction: { type: Schema.Types.ObjectId, ref: 'WalletTransaction' },
     purchasedAt: { type: Date, default: Date.now },

@@ -97,7 +97,7 @@ async function sweepAt(chatId, now) {
   /* ======================================================= pure unit tests */
   section('unit — package price calculation (config/packages.js)');
   check('the package list is 3/5/10/20 minutes', packages.CONSULTATION_PACKAGES.map(p => p.minutes).join(',') === '3,5,10,20');
-  check('no package carries a discount today', packages.CONSULTATION_PACKAGES.every(p => p.discountPercent === 0));
+  check('the built-in defaults carry no discount (admin sets real ones)', packages.CONSULTATION_PACKAGES.every(p => p.discountPercent === 0));
   check('3 min × ₹20 = ₹60', packages.packagePrice(20, packages.findPackage(3)) === 60);
   check('20 min × ₹37 = ₹740', packages.packagePrice(37, packages.findPackage(20)) === 740);
   check('a zero rate prices at ₹0', packages.packagePrice(0, packages.findPackage(5)) === 0);
@@ -585,6 +585,75 @@ async function sweepAt(chatId, now) {
     const end = await asUser('POST', `/chats/${ok.body.chatId}/end`, { reason: 'user_ended' });
     check('ending from the prompt charges nothing more', end.status === 200 && end.body.amountCharged === 60 && await balanceOf(user._id) === 10);
     server.close();
+  }
+
+  /* ------------------------------------------------ admin package discounts */
+  section('unit — admin package discounts');
+  {
+    const withDiscounts = packages.packagesWithDiscounts([{ minutes: 5, discountPercent: 10 }, { minutes: 7, discountPercent: 50 }]);
+    check('only offered durations are affected; a stale 7-min entry adds nothing', withDiscounts.map(p => `${p.minutes}:${p.discountPercent}`).join(',') === '3:0,5:10,10:0,20:0');
+    const q = packages.packageQuotes(20, 95, [{ minutes: 5, discountPercent: 10 }, { minutes: 20, discountPercent: 25 }]);
+    check('quotes carry the original and the discounted price', q[1].originalPrice === 100 && q[1].price === 90 && q[1].discountPercent === 10);
+    check('20 min at 25% off: ₹400 -> ₹300', q[3].originalPrice === 400 && q[3].price === 300);
+    check('affordability is judged on the discounted price (₹95 covers ₹90)', q[1].affordable === true && q[2].affordable === false);
+    const merged = packages.mergePackageDiscounts([{ minutes: 10, discountPercent: 15 }], [{ minutes: 5, discountPercent: 10 }]);
+    check('an edit merges over the current discounts', merged.map(p => `${p.minutes}:${p.discountPercent}`).join(',') === '3:0,5:10,10:15,20:0');
+    const bad = [
+      [{ minutes: 5, discountPercent: 95 }],
+      [{ minutes: 5, discountPercent: -1 }],
+      [{ minutes: 5, discountPercent: 12.5 }],
+      [{ minutes: 7, discountPercent: 10 }],
+    ];
+    check('refuses >90%, negative, fractional and unknown durations', bad.every(entry => { try { packages.mergePackageDiscounts(entry); return false; } catch { return true; } }));
+  }
+
+  section('admin package discounts — applied, locked and charged');
+  {
+    const settingsService = require('../services/settings.service');
+    await settingsService.update({ packageDiscounts: [{ minutes: 5, discountPercent: 10 }, { minutes: 20, discountPercent: 25 }] });
+    const badSave = await expectError(() => settingsService.update({ packageDiscounts: [{ minutes: 5, discountPercent: 95 }] }));
+    check('an invalid admin save is refused with a 400', badSave?.status === 400);
+    check('...and leaves the saved discounts untouched', (await settingsService.get()).packageDiscounts.find(d => d.minutes === 5).discountPercent === 10);
+
+    const user = await makeUser(1000);
+    const astro = await makeAstrologer({ chatRate: 20, callRate: 30, commissionPercent: 25 });
+    const pre = await chatService.precheckSession({ userId: user._id, astrologerId: astro._id, channel: 'chat' });
+    check('precheck shows 5 min: ₹100 struck -> ₹90', pre.packages[1].originalPrice === 100 && pre.packages[1].price === 90 && pre.packages[1].discountPercent === 10);
+    const callPre = await chatService.precheckSession({ userId: user._id, astrologerId: astro._id, channel: 'call' });
+    check('the same discount applies to calls (5 × ₹30 = ₹150 -> ₹135)', callPre.packages[1].price === 135);
+
+    const stale = await expectError(() => chatService.requestChat({
+      userId: user._id, astrologerId: astro._id, intake: {}, billing: { mode: 'package', packageMinutes: 5, quotedPrice: 100 },
+    }));
+    check('the undiscounted price is refused (price_changed -> ₹90)', stale?.code === 'price_changed' && stale.details?.price === 90 && stale.details?.originalPrice === 100);
+
+    const requested = await chatService.requestChat({
+      userId: user._id, astrologerId: astro._id, intake: {}, billing: { mode: 'package', packageMinutes: 5, quotedPrice: 90 },
+    });
+    check('the discounted price is locked onto the request', requested.billing.requestedPackagePrice === 90 && requested.billing.requestedPackageDiscountPercent === 10);
+
+    await settingsService.update({ packageDiscounts: [{ minutes: 5, discountPercent: 50 }] });
+    await chatService.acceptChat({ chatId: requested._id, astrologerId: astro._id });
+    const chat = await ChatSession.findById(requested._id);
+    check('admin changing the discount before accept does not change the charge (₹90, not ₹50)', await balanceOf(user._id) === 910 && chat.billing.amountCharged === 90);
+    const entry = chat.billing.packages[0];
+    check('the record keeps original ₹100, 10% off, charged ₹90', entry.originalAmount === 100 && entry.discountPercent === 10 && entry.amount === 90);
+    const debit = await WalletTransaction.findOne({ chatSession: chat._id, direction: 'debit' });
+    check('the wallet line says the discount', debit.amount === 90 && /\(10% off\)/.test(debit.title));
+
+    await sweepAt(chat._id, seconds(chat.packageState.endsAt, 1));
+    const prompt = eventsFor(chat._id, CHAT_EVENTS.PACKAGE_ENDED)[0];
+    check('the extend prompt prices at the current discount (5 min now ₹50)', prompt.payload.packages[1].price === 50 && prompt.payload.packages[1].originalPrice === 100);
+    await settingsService.update({ packageDiscounts: [{ minutes: 5, discountPercent: 20 }] });
+    const changed = await expectError(() => chatService.extendPackage({ chatId: chat._id, userId: user._id, packageMinutes: 5, quotedPrice: 50 }));
+    check('a discount changed while the prompt is open -> price_changed (₹80), nothing charged', changed?.code === 'price_changed' && changed.details?.price === 80 && await balanceOf(user._id) === 910);
+    const ext = await chatService.extendPackage({ chatId: chat._id, userId: user._id, packageMinutes: 5, quotedPrice: 80 });
+    check('re-confirmed extension charged at the discounted ₹80', ext.amount === 80 && await balanceOf(user._id) === 830);
+
+    const ended = await chatService.endChat({ chatId: chat._id, accountId: user._id, endedBy: 'user' });
+    check('astrologer share is on what was paid (₹170 - 25% = ₹127)', ended.billing.astrologerEarning === 127 && await earningsOf(astro._id) === 127);
+
+    await settingsService.update({ packageDiscounts: [3, 5, 10, 20].map(minutes => ({ minutes, discountPercent: 0 })) });
   }
 
   console.log('\n=== SCENARIOS ===');

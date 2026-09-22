@@ -146,6 +146,9 @@ const chatSessionSchema = new Schema(
       isSettled: { type: Boolean, default: false },
       /** Package sessions only: the package asked for at request time — charged on accept, not before. */
       requestedPackageMinutes: { type: Number, min: 1 },
+      /** Package sessions only: the admin discount (percent) and the resulting price the seeker confirmed — locked at request, charged on accept. */
+      requestedPackageDiscountPercent: { type: Number, min: 0, max: 100 },
+      requestedPackagePrice: { type: Number, min: 0 },
       /**
        * Package sessions only: every package bought on this session, initial
        * and extensions, in order. Mirrors ChatPackagePurchase (the ledger
@@ -160,6 +163,8 @@ const chatSessionSchema = new Schema(
               minutes: { type: Number, required: true, min: 1 },
               ratePerMinute: { type: Number, required: true, min: 0 },
               discountPercent: { type: Number, default: 0 },
+              /** minutes × rate, before the discount. */
+              originalAmount: { type: Number, min: 0 },
               amount: { type: Number, required: true, min: 0 },
               walletTransaction: { type: Schema.Types.ObjectId, ref: 'WalletTransaction' },
               purchasedAt: { type: Date },

@@ -12,6 +12,8 @@
  */
 
 const Settings = require('../models/Settings');
+const ApiError = require('../utils/ApiError');
+const { mergePackageDiscounts } = require('../config/packages');
 
 /** How long a cached copy is trusted, in milliseconds. */
 const CACHE_MS = 10000;
@@ -56,6 +58,15 @@ async function update(changes, admin) {
   }
   if (changes.supportPhone !== undefined) {
     settings.supportPhone = changes.supportPhone;
+  }
+
+  /** One entry per package; entries not sent keep their current discount. */
+  if (changes.packageDiscounts !== undefined) {
+    try {
+      settings.packageDiscounts = mergePackageDiscounts(changes.packageDiscounts, settings.packageDiscounts);
+    } catch (error) {
+      throw ApiError.badRequest(error.message, { packageDiscounts: error.message });
+    }
   }
 
   /** Merged one key at a time, so sending one switch does not clear the rest. */
