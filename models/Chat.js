@@ -47,6 +47,11 @@ const CHAT_EVENTS = {
   /** Server -> client only, from the astrologer's own socket connecting/disconnecting while a session is active (services/chat.service.js's pauseSessionsForAstrologer/resumeSessionsForAstrologer). */
   ASTROLOGER_LEFT: 'chat:astrologer_left',
   ASTROLOGER_JOINED: 'chat:astrologer_joined',
+  /** Server -> client only, package sessions (config/packages.js): ~30s left, time up (the extend prompt), extended, switched to per-minute. */
+  PACKAGE_WARNING: 'chat:package_warning',
+  PACKAGE_ENDED: 'chat:package_ended',
+  PACKAGE_EXTENDED: 'chat:package_extended',
+  PER_MINUTE_STARTED: 'chat:per_minute_started',
 };
 
 const roomFor = chatId => `chat:${chatId}`;
@@ -126,11 +131,12 @@ const chatSessionSchema = new Schema(
     /** Per-minute billing, kept on the session so a receipt needs no recompute. */
     billing: {
       /**
-       * Frozen at request time and never re-read from the astrologer's live
-       * rate again — a rate change mid-session must never affect a chat
-       * already in flight. 'package' is a placeholder for a future billing
-       * model (see `packages` on Astrologer, not built yet); only
-       * 'per_minute' has any billing logic behind it today.
+       * How the session was booked — never changes afterwards, so it stays
+       * the record of what the seeker chose. A 'package' session that later
+       * switches to per-minute keeps 'package' here; `packageState.perMinuteStartedAt`
+       * is what marks the switch. The rate below is frozen at request time
+       * and never re-read from the astrologer's live rate again — a rate
+       * change mid-session must never affect a chat already in flight.
        */
       mode: { type: String, enum: ['per_minute', 'package'], default: 'per_minute' },
       ratePerMinute: { type: Number, default: 0, min: 0 },
@@ -138,6 +144,71 @@ const chatSessionSchema = new Schema(
       amountCharged: { type: Number, default: 0, min: 0 },
       astrologerEarning: { type: Number, default: 0, min: 0 },
       isSettled: { type: Boolean, default: false },
+      /** Package sessions only: the package asked for at request time — charged on accept, not before. */
+      requestedPackageMinutes: { type: Number, min: 1 },
+      /**
+       * Package sessions only: every package bought on this session, initial
+       * and extensions, in order. Mirrors ChatPackagePurchase (the ledger
+       * that keeps them idempotent) so a receipt needs no join.
+       */
+      packages: {
+        type: [
+          new Schema(
+            {
+              seq: { type: Number, required: true, min: 1 },
+              kind: { type: String, enum: ['initial', 'extension'], required: true },
+              minutes: { type: Number, required: true, min: 1 },
+              ratePerMinute: { type: Number, required: true, min: 0 },
+              discountPercent: { type: Number, default: 0 },
+              amount: { type: Number, required: true, min: 0 },
+              walletTransaction: { type: Schema.Types.ObjectId, ref: 'WalletTransaction' },
+              purchasedAt: { type: Date },
+            },
+            { _id: false },
+          ),
+        ],
+        default: undefined,
+      },
+      /** Package sessions only: rupees charged for packages (a subset of amountCharged, which also includes any per-minute tail). */
+      packageAmountCharged: { type: Number, default: 0, min: 0 },
+      /**
+       * Package sessions only: the astrologer's share of package money is
+       * credited once, when the session ends (never per purchase), so a
+       * future unused-minutes refund never has to claw back money they may
+       * already have withdrawn. Set atomically before the credit so it can
+       * never be paid twice.
+       */
+      packageEarningSettled: { type: Boolean, default: false },
+      /** Package sessions only: what the refund policy hook returned at the end (config/packages.js's unusedPackageRefund). */
+      packageRefundAmount: { type: Number, default: 0, min: 0 },
+    },
+
+    /**
+     * Where a package session's clock stands. All server-side — the app only
+     * displays `endsAt` against `serverTime` (see getSessionState).
+     */
+    packageState: {
+      /** When the package time currently paid for runs out. */
+      endsAt: { type: Date },
+      /** Set once the ~30s "running out" warning has gone out for the current package. */
+      warnedAt: { type: Date },
+      /**
+       * Set while the "Extend consultation?" prompt is open. The session is
+       * frozen meanwhile (no messages, nothing charged); unanswered for
+       * `packageExtensionResponseSeconds` it ends ('package_no_response').
+       */
+      promptedAt: { type: Date },
+      /**
+       * Set by the sweep the moment it claims an unanswered prompt for
+       * ending — extend / continue-per-minute both refuse once this is set,
+       * so an answer racing the timeout can never charge a session that is
+       * being closed.
+       */
+      closingAt: { type: Date },
+      /** Set when the seeker chose "Continue per-minute" — the normal per-minute meter runs from here. */
+      perMinuteStartedAt: { type: Date },
+      /** Package seconds paid for but not used when the session ended — the input to the refund policy. */
+      unusedSeconds: { type: Number, min: 0 },
     },
 
     /**

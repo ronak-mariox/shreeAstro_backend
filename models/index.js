@@ -15,6 +15,7 @@ const AstrologerProfile = require('./AstrologerProfile');
 const Admin = require('./Admin');
 const chat = require('./Chat');
 const ChatBillingTick = require('./ChatBillingTick');
+const ChatPackagePurchase = require('./ChatPackagePurchase');
 const AssistantMemory = require('./AssistantMemory');
 const WalletTransaction = require('./WalletTransaction');
 const Withdrawal = require('./Withdrawal');
@@ -37,6 +38,7 @@ module.exports = {
   Admin,
   ...chat,
   ChatBillingTick,
+  ChatPackagePurchase,
   AssistantMemory,
   WalletTransaction,
   Withdrawal,
