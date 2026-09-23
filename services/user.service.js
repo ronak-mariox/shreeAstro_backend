@@ -353,12 +353,13 @@ async function toggleFavourite(userId, astrologerId) {
 
 /** The favourites list, as directory cards. */
 async function listFavourites(userId) {
-  const { toDirectoryCard } = require('./astrologer.service');
+  const { toDirectoryCard, estimatedWaitSecondsFor } = require('./astrologer.service');
 
   const user = await User.findById(userId).select('favouriteAstrologers');
   const rows = await Astrologer.find({ _id: { $in: user.favouriteAstrologers } });
+  const waits = await estimatedWaitSecondsFor(rows);
 
-  return rows.map(toDirectoryCard);
+  return rows.map(row => toDirectoryCard(row, waits.get(String(row._id))));
 }
 
 module.exports = {

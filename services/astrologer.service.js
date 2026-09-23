@@ -15,6 +15,7 @@ const Astrologer = require('../models/Astrologer');
 const AstrologerProfile = require('../models/AstrologerProfile');
 const { ChatSession } = require('../models/Chat');
 const ApiError = require('../utils/ApiError');
+const env = require('../config/env');
 const { istDateString, startOfIstDay } = require('../utils/istDate');
 const chatService = require('./chat.service');
 const notificationService = require('./notification.service');
@@ -39,8 +40,88 @@ const LISTABLE = {
 /* The seeker-facing directory                                                */
 /* -------------------------------------------------------------------------- */
 
+/**
+ * How long a seeker is told to wait for a busy astrologer.
+ *
+ * An estimate, never a promise: a package session's own remaining time is
+ * known exactly, but a per-minute one runs until somebody ends it, so it is
+ * projected from how long this astrologer's own consultations usually last
+ * (their billed minutes over their consultation count), falling back to
+ * `consultation.estimatedConsultationMinutes` until they have any. Never
+ * less than a minute — "Wait 0 min" would read as free.
+ */
+const MIN_ESTIMATED_WAIT_SECONDS = 60;
+
+/** This astrologer's usual consultation length, in minutes. */
+function typicalConsultationMinutes(astrologer) {
+  const metrics = astrologer?.metrics;
+  const consultations = metrics?.totalConsultations || 0;
+  const minutes = (metrics?.chatMinutes || 0) + (metrics?.callMinutes || 0);
+  return consultations > 0 && minutes > 0
+    ? Math.max(1, Math.round(minutes / consultations))
+    : env.consultation.estimatedConsultationMinutes;
+}
+
+/** How much longer one live session is likely to run. */
+function estimatedRemainingSeconds(session, typicalMinutes, now) {
+  const state = session.packageState || {};
+  const onPackageTime = session.billing?.mode === 'package' && !state.perMinuteStartedAt;
+
+  if (onPackageTime) {
+    /** Paused on "how do you want to continue?" — either answer is moments away. */
+    if (state.awaitingChoiceSince) {
+      return MIN_ESTIMATED_WAIT_SECONDS;
+    }
+    if (state.endsAt) {
+      return Math.max(MIN_ESTIMATED_WAIT_SECONDS, Math.round((new Date(state.endsAt).getTime() - now.getTime()) / 1000));
+    }
+  }
+
+  /** Per-minute (or a package that has moved on to it): project from the usual length. */
+  const since = state.perMinuteStartedAt || session.startedAt || now;
+  const elapsedSeconds = Math.max(0, Math.round((now.getTime() - new Date(since).getTime()) / 1000));
+  return Math.max(MIN_ESTIMATED_WAIT_SECONDS, typicalMinutes * 60 - elapsedSeconds);
+}
+
+/**
+ * The estimated wait for each of `astrologers` who is in a consultation right
+ * now, as a Map of id -> seconds. Astrologers with nothing running are absent
+ * from the map, which is what the cards read as "free". Someone taking
+ * several chats at once is timed by whichever ends soonest — that is when a
+ * slot opens.
+ *
+ * Computed on read rather than stored, so it is never stale: a session that
+ * ended a second ago frees the astrologer immediately, with nothing to
+ * unset. (`presence.waitSeconds` on the model predates this and is not used.)
+ */
+async function estimatedWaitSecondsFor(astrologers, now = new Date()) {
+  const waits = new Map();
+  const busy = (astrologers || []).filter(
+    astrologer => (astrologer?.presence?.activeSessions || 0) > 0 || astrologer?.presence?.isBusy,
+  );
+  if (busy.length === 0) {
+    return waits;
+  }
+
+  const sessions = await ChatSession.find({
+    astrologer: { $in: busy.map(astrologer => astrologer._id) },
+    status: 'active',
+    type: 'consultation',
+  })
+    .select('astrologer startedAt billing.mode packageState')
+    .lean();
+
+  const byId = new Map(busy.map(astrologer => [String(astrologer._id), astrologer]));
+  for (const session of sessions) {
+    const key = String(session.astrologer);
+    const remaining = estimatedRemainingSeconds(session, typicalConsultationMinutes(byId.get(key)), now);
+    waits.set(key, Math.min(waits.get(key) ?? Infinity, remaining));
+  }
+  return waits;
+}
+
 /** One row of the directory, in the shape the app's cards read. */
-function toDirectoryCard(astrologer) {
+function toDirectoryCard(astrologer, estimatedWaitSeconds) {
   const chat = astrologer.services?.find(s => s.type === 'chat' && s.isEnabled);
   const call = astrologer.services?.find(s => s.type === 'call' && s.isEnabled);
 
@@ -50,8 +131,12 @@ function toDirectoryCard(astrologer) {
     photo: astrologer.photoUrl,
     online: Boolean(astrologer.presence?.isOnline),
     busy: Boolean(astrologer.presence?.isBusy),
-    /** Seconds the seeker is told to wait; 0 means "available now". */
-    waitSeconds: astrologer.presence?.waitSeconds || 0,
+    /**
+     * The estimated wait while they finish what they are in, in seconds; 0
+     * means "free now". An estimate, not a promise — see
+     * estimatedWaitSecondsFor.
+     */
+    waitSeconds: estimatedWaitSeconds ?? 0,
     expertise: astrologer.expertise || [],
     languages: astrologer.languages || [],
     topics: astrologer.topics || [],
@@ -143,7 +228,13 @@ async function listAstrologers({
     Astrologer.countDocuments(query),
   ]);
 
-  return { items: rows.map(toDirectoryCard), total, page: Number(page), limit: Number(limit) };
+  const waits = await estimatedWaitSecondsFor(rows);
+  return {
+    items: rows.map(row => toDirectoryCard(row, waits.get(String(row._id)))),
+    total,
+    page: Number(page),
+    limit: Number(limit),
+  };
 }
 
 /**
@@ -160,7 +251,7 @@ async function getAstrologerProfile(astrologerId) {
   const reviews = await recentReviews(astrologer._id, 10);
 
   return {
-    ...toDirectoryCard(astrologer),
+    ...toDirectoryCard(astrologer, (await estimatedWaitSecondsFor([astrologer])).get(String(astrologer._id))),
     about: profile?.about,
     tagline: profile?.tagline,
     specializations: profile?.specializations || [],
@@ -823,4 +914,6 @@ module.exports = {
   getDashboard,
   replaceDocument,
   toDirectoryCard,
+  estimatedWaitSecondsFor,
+  typicalConsultationMinutes,
 };
