@@ -157,6 +157,23 @@ async function createBirthProfile(userId, input, origin) {
     await assertCreditBudget(ASTROLOGY_API_PROVIDER, missingSections);
   }
 
+  /**
+   * The same birth, asked for again (the app re-checking after an edit that
+   * turned out to change nothing, two family members sharing a birth moment,
+   * a second device): reuse the profile that already exists rather than
+   * stacking duplicates. Its sections are cached under the same `birthHash`
+   * either way, so nothing is fetched or paid for twice — but a profile left
+   * `pending`/`failed` by an earlier partial batch gets another run.
+   */
+  const existing = await BirthProfile.findOne({ user: userId, birthHash, relation: relation || 'self' });
+  if (existing) {
+    if (existing.status !== 'ready') {
+      existing.status = await runBatch(existing, origin);
+      await existing.save();
+    }
+    return { id: String(existing._id), status: existing.status, reused: true };
+  }
+
   const profile = await BirthProfile.create({
     user: userId,
     label,

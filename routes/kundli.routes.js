@@ -23,6 +23,9 @@ router.post(
   kundliController.createBirthProfile,
 );
 
+/** Declared before /kundli/:profileId so "me" is read as itself, not as a profile id. */
+router.get('/kundli/me', authenticate, authorize('user'), kundliController.getCurrentKundli);
+
 router.get(
   '/kundli/:profileId',
   authenticate,
