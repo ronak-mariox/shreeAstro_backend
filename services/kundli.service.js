@@ -8,6 +8,7 @@
  */
 
 const BirthProfile = require('../models/BirthProfile');
+const UserProfile = require('../models/UserProfile');
 const KundliCache = require('../models/KundliCache');
 const ApiError = require('../utils/ApiError');
 const env = require('../config/env');
@@ -129,7 +130,41 @@ async function runBatch(birthProfile, origin) {
  * rule. The decimal tzone is looked up fresh for THIS birth date (not
  * today's), since historical Indian offsets were not always +5:30.
  */
-async function createBirthProfile(userId, input, origin) {
+/**
+ * Writes the birth details a chart was actually cast from back onto the
+ * seeker's own account.
+ *
+ * The form gives a place as text ("Aligarh"); the provider resolves it to
+ * something else ("Aligarh, IN", with coordinates). Leaving the account holding
+ * the typed version means the two records describe the same birth in two
+ * different ways, and nothing downstream can tell that the chart on file IS the
+ * chart for these details — which is exactly what left the Kundli tab offering
+ * to generate a chart it had just generated.
+ *
+ * Only for the seeker's own chart ('self'), only when the seeker is the one who
+ * asked (an astrologer generating during a consultation must not rewrite the
+ * account's details from something they typed), and only the birth moment and
+ * place — never the name or gender, which are the account's to set.
+ */
+async function syncOwnBirthDetails(userId, { dob, tob, place, timezone }) {
+  await UserProfile.updateOne(
+    { user: userId },
+    {
+      $set: {
+        'birthDetails.dateOfBirth': dob,
+        'birthDetails.timeOfBirth': tob,
+        'birthDetails.place.formatted': place.formatted,
+        'birthDetails.place.city': place.city,
+        'birthDetails.place.country': place.country,
+        'birthDetails.place.latitude': place.latitude,
+        'birthDetails.place.longitude': place.longitude,
+        ...(timezone ? { 'birthDetails.place.timezone': timezone } : {}),
+      },
+    },
+  );
+}
+
+async function createBirthProfile(userId, input, origin, { syncOwnProfile = false } = {}) {
   const { fullName, gender, label, relation, dateOfBirth, timeOfBirth, placeId } = input;
 
   const { dob, tob } = parseAndValidateBirthMoment(dateOfBirth, timeOfBirth);
@@ -165,11 +200,17 @@ async function createBirthProfile(userId, input, origin) {
    * either way, so nothing is fetched or paid for twice — but a profile left
    * `pending`/`failed` by an earlier partial batch gets another run.
    */
+  const isOwnChart = (relation || 'self') === 'self';
+
   const existing = await BirthProfile.findOne({ user: userId, birthHash, relation: relation || 'self' });
   if (existing) {
     if (existing.status !== 'ready') {
       existing.status = await runBatch(existing, origin);
       await existing.save();
+    }
+    /** Still worth syncing: this is the chart the account's details now point at. */
+    if (syncOwnProfile && isOwnChart) {
+      await syncOwnBirthDetails(userId, { dob, tob, place, timezone: place.timezone });
     }
     return { id: String(existing._id), status: existing.status, reused: true };
   }
@@ -201,6 +242,10 @@ async function createBirthProfile(userId, input, origin) {
 
   profile.status = await runBatch(profile, origin);
   await profile.save();
+
+  if (syncOwnProfile && isOwnChart) {
+    await syncOwnBirthDetails(userId, { dob, tob, place, timezone: place.timezone });
+  }
 
   return { id: String(profile._id), status: profile.status };
 }

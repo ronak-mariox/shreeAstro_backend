@@ -189,9 +189,8 @@ async function getCurrentKundli(userId) {
     return { found: false, reason: 'birth_details_missing' };
   }
 
-  const fingerprint = birthFingerprint(details);
   const candidates = await BirthProfile.find({ user: userId }).sort({ createdAt: -1 }).lean();
-  const match = candidates.find(candidate => birthFingerprint(candidate.birthDetails) === fingerprint);
+  const match = candidates.find(candidate => isSameBirth(details, candidate.birthDetails));
 
   if (!match) {
     /** Their details changed (or they never generated one): a fresh chart is needed. */
@@ -201,17 +200,48 @@ async function getCurrentKundli(userId) {
 }
 
 /**
- * What makes two births the same chart, for the purpose above: the day, the
- * minute, and the place as the place search labelled it. (The cache's own key
- * is `birthHash` — computed from the geocoded coordinates — but the seeker's
- * profile keeps only the place's text, so this is what can be compared.)
+ * The same place, written by whoever wrote it.
+ *
+ * Coordinates when both sides have them — that is what the chart itself was
+ * cast from. Otherwise the city, because the two records genuinely spell the
+ * place differently: the account's own birth details keep what the seeker
+ * picked in the form ("Aligarh", country "India"), while a generated chart
+ * keeps what the provider returned ("Aligarh, IN", country "IN"), and only the
+ * seeker's side is missing the coordinates.
+ *
+ * Comparing the formatted text, as this used to, therefore never matched — so
+ * the Kundli tab offered "Generate Kundli" even immediately after generating
+ * one, and pressing it again cast another.
  */
-function birthFingerprint(details) {
-  return [
-    dayOf(details?.dateOfBirth) || '',
-    details?.timeOfBirth || '',
-    (details?.place?.formatted || '').trim().toLowerCase(),
-  ].join('|');
+function coordsOf(place) {
+  if (place?.latitude == null || place?.longitude == null) {
+    return null;
+  }
+  /** 3 decimal places is ~100m — the same birth place, not the same GPS reading. */
+  return `${Number(place.latitude).toFixed(3)},${Number(place.longitude).toFixed(3)}`;
+}
+
+function cityOf(place) {
+  const city = place?.city || String(place?.formatted || '').split(',')[0];
+  return String(city).trim().toLowerCase();
+}
+
+function samePlace(a, b) {
+  const [left, right] = [coordsOf(a), coordsOf(b)];
+  return left && right ? left === right : cityOf(a) === cityOf(b);
+}
+
+/**
+ * Whether two sets of birth details describe the same chart: the day, the
+ * minute, and the place. A chart is cast from exactly these, so anything that
+ * differs here is a different chart and has to be generated.
+ */
+function isSameBirth(a, b) {
+  return (
+    dayOf(a?.dateOfBirth) === dayOf(b?.dateOfBirth)
+    && (a?.timeOfBirth || '') === (b?.timeOfBirth || '')
+    && samePlace(a?.place, b?.place)
+  );
 }
 
 /** A Date (or ISO string) -> "YYYY-MM-DD" in UTC, the way birth dates are stored (UTC midnight). */
@@ -441,7 +471,7 @@ async function generateSeekerKundliForChat({ chatId, accountId, details, origin 
 
 module.exports = {
   getCurrentKundli,
-  birthFingerprint,
+  isSameBirth,
   getSeekerKundliForChat,
   generateSeekerKundliForChat,
   pickProfileForChat,

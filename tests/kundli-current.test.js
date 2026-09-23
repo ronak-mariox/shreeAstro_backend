@@ -124,6 +124,55 @@ const resetCounts = () => { kundliCalls = []; geoCalls = []; };
   await setProfileBirth(secondDoc.birthDetails.dateOfBirth, secondDoc.birthDetails.timeOfBirth, secondDoc.birthDetails.place.formatted);
   check('put back, it resolves to the same chart again', (await current()).profileId === second.id);
 
+  /**
+   * The case this missed for real, and the reason the Kundli tab kept offering
+   * to generate a chart it had already generated: the two records spell the
+   * place differently. Every check above first copied the chart's own
+   * `place.formatted` onto the account, which is an invariant the app never
+   * actually maintained — the account keeps what the seeker picked in the form
+   * ("Aligarh", no coordinates), the chart keeps what the provider returned
+   * ("Aligarh, IN", with them).
+   */
+  section('the account and the chart spell the place differently — the real case');
+  await setProfileBirth(
+    secondDoc.birthDetails.dateOfBirth,
+    secondDoc.birthDetails.timeOfBirth,
+    secondDoc.birthDetails.place.city,
+  );
+  const accountPlace = (await UserProfile.findOne({ user: user._id }).lean()).birthDetails.place;
+  check('the account has the bare city and no coordinates, as the form leaves it',
+    accountPlace.formatted === secondDoc.birthDetails.place.city && accountPlace.latitude == null, accountPlace);
+  check('the chart has the provider\'s label and coordinates',
+    secondDoc.birthDetails.place.formatted !== secondDoc.birthDetails.place.city
+    && secondDoc.birthDetails.place.latitude != null);
+  const spelledDifferently = await current();
+  check('same birth all the same → the tab shows "View Kundli", not "Generate"',
+    spelledDifferently.found === true && spelledDifferently.profileId === second.id, spelledDifferently);
+
+  section('and generating from the seeker\'s own screen puts the resolved place on the account');
+  resetCounts();
+  await kundliService.createBirthProfile(
+    user._id,
+    { ...birth, dateOfBirth: '16/08/1995', placeId: mumbai },
+    undefined,
+    { syncOwnProfile: true },
+  );
+  const synced = (await UserProfile.findOne({ user: user._id }).lean()).birthDetails;
+  check('the account now holds the place the chart was cast from', synced.place.formatted === secondDoc.birthDetails.place.formatted, synced.place.formatted);
+  check('...with its coordinates, so nothing has to be guessed again',
+    Number(synced.place.latitude).toFixed(3) === Number(secondDoc.birthDetails.place.latitude).toFixed(3), synced.place.latitude);
+  check('the birth moment is unchanged by the sync',
+    synced.timeOfBirth === secondDoc.birthDetails.timeOfBirth
+    && new Date(synced.dateOfBirth).getTime() === new Date(secondDoc.birthDetails.dateOfBirth).getTime());
+  check('syncing cost nothing — the chart was already cached', kundliCalls.length === 0, kundliCalls);
+  check('and it still resolves to the same chart', (await current()).profileId === second.id);
+
+  section('an astrologer generating during a consultation does NOT rewrite the account');
+  await setProfileBirth(secondDoc.birthDetails.dateOfBirth, secondDoc.birthDetails.timeOfBirth, secondDoc.birthDetails.place.city);
+  await kundliService.createBirthProfile(user._id, { ...birth, dateOfBirth: '16/08/1995', placeId: mumbai });
+  check('the account keeps what the seeker themselves put there',
+    (await UserProfile.findOne({ user: user._id }).lean()).birthDetails.place.formatted === secondDoc.birthDetails.place.city);
+
   section('generating the same birth twice costs nothing and makes no duplicate');
   resetCounts();
   const again = await kundliService.createBirthProfile(user._id, { ...birth, dateOfBirth: '16/08/1995', placeId: mumbai });
