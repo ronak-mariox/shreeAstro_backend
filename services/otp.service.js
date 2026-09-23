@@ -18,10 +18,18 @@
  * worked before either existed:
  *   - the code is always printed to the server log,
  *   - it is always returned in the API response in development,
- *   - the master code in config/env.js always works, unchanged,
+ *   - the master code in config/env.js still works, for any account,
  *   - and `deliverOtp` now *also* tries MSG91 (phone) / SMTP (email) when an
  *     admin has configured one on the Third Parties tab. Unconfigured, or a
  *     failed send, changes nothing above — this never throws.
+ *
+ * The master code is in use in production for now, which makes one six-digit
+ * value a way into every account, so guessing is capped from two directions:
+ * `guessKey` below budgets wrong guesses per phone number or email address
+ * (unaffected by resends, and counted even when no code was ever requested —
+ * the path a master-code guess takes), and
+ * middlewares/rateLimit.middleware.js caps how often one caller may try at
+ * all. Ten guesses per destination per 15 minutes is not a six-digit space.
  */
 
 const crypto = require('crypto');
@@ -41,6 +49,35 @@ function codeKey(purpose, channel, destination) {
 
 function cooldownKey(purpose, channel, destination) {
   return `otp:cooldown:${purpose}:${channel}:${destination}`;
+}
+
+/**
+ * Wrong guesses made against one phone number or email address, counted apart
+ * from the code itself.
+ *
+ * `record.attempts` beside the stored code cannot carry this on its own: it is
+ * reset by every resend (deliberately — that is the way out of a lockout), and
+ * it is only reached once a code has been requested at all. Neither holds for
+ * the master code, which is valid with no code stored and unaffected by
+ * resends, so guessing it would otherwise be free and unlimited. This key
+ * outlives both, and nothing a caller can do resets it.
+ */
+function guessKey(purpose, channel, destination) {
+  return `otp:guesses:${purpose}:${channel}:${destination}`;
+}
+
+/** Guesses allowed per destination per window, and how long that window is. */
+const MAX_GUESSES_PER_DESTINATION = 10;
+const GUESS_WINDOW_SECONDS = 15 * 60;
+
+/** Counts a wrong guess. Fixed window: only the first one sets the expiry. */
+async function countGuess(purpose, channel, destination) {
+  const key = guessKey(purpose, channel, destination);
+  const guesses = await redis.incr(key);
+  if (guesses === 1) {
+    await redis.expire(key, GUESS_WINDOW_SECONDS);
+  }
+  return guesses;
 }
 
 /** A random 6-digit code. randomInt, not Math.random — this is a credential. */
@@ -134,9 +171,25 @@ async function sendOtp({ channel, destination, purpose = 'login' }) {
  * A correct code is deleted straight away so it cannot be used twice.
  */
 async function verifyOtp({ channel, destination, code, purpose = 'login' }) {
+  /**
+   * How many wrong guesses this destination has already had, before anything
+   * else is checked — including the master code, whose whole risk is that it
+   * is the same six digits for every account in the system.
+   */
+  const guesses = Number(await redis.get(guessKey(purpose, channel, destination))) || 0;
+  if (guesses >= MAX_GUESSES_PER_DESTINATION) {
+    return { ok: false, reason: 'attempts_exceeded' };
+  }
+
   /** The master code works for any account. Remove this with the master code. */
   if (env.otp.masterCode && String(code) === env.otp.masterCode) {
-    await redis.del(codeKey(purpose, channel, destination));
+    await redis.del(codeKey(purpose, channel, destination), guessKey(purpose, channel, destination));
+    /**
+     * Recorded, because otherwise a sign-in that bypassed the account's own
+     * code looks exactly like one that didn't. While this is switched on in
+     * production it is the one line that says who came in this way.
+     */
+    console.warn(`[otp] MASTER CODE used for ${purpose} on ${channel} ${destination}`);
     return { ok: true, usedMasterCode: true };
   }
 
@@ -145,6 +198,8 @@ async function verifyOtp({ channel, destination, code, purpose = 'login' }) {
 
   /** Gone means either never asked for, or expired — Redis deleted it for us. */
   if (!stored) {
+    /** Still a guess: with a master code set, this is the path an attacker takes. */
+    await countGuess(purpose, channel, destination);
     return { ok: false, reason: 'not_requested' };
   }
 
@@ -156,6 +211,7 @@ async function verifyOtp({ channel, destination, code, purpose = 'login' }) {
 
   if (record.codeHash !== hashCode(code)) {
     record.attempts += 1;
+    await countGuess(purpose, channel, destination);
     /**
      * Written back with the TTL it had left, so a wrong guess counts but does
      * not extend the code's life.
@@ -172,13 +228,18 @@ async function verifyOtp({ channel, destination, code, purpose = 'login' }) {
     };
   }
 
-  await redis.del(key);
+  /** Signed in: this destination starts clean again. */
+  await redis.del(key, guessKey(purpose, channel, destination));
   return { ok: true };
 }
 
 /** Throws the code away — used when an account is deleted or blocked. */
 async function clearOtp({ channel, destination, purpose = 'login' }) {
-  await redis.del(codeKey(purpose, channel, destination), cooldownKey(purpose, channel, destination));
+  await redis.del(
+    codeKey(purpose, channel, destination),
+    cooldownKey(purpose, channel, destination),
+    guessKey(purpose, channel, destination),
+  );
 }
 
 /** "9876543210" -> "••••••3210", "ronak@mail.com" -> "ro•••@mail.com". */
@@ -200,4 +261,6 @@ module.exports = {
   clearOtp,
   maskDestination,
   OTP_LENGTH,
+  MAX_GUESSES_PER_DESTINATION,
+  GUESS_WINDOW_SECONDS,
 };

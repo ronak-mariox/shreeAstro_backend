@@ -16,6 +16,7 @@
  *   /horoscope      user_app    today's reading and the planet positions
  *   /support        both apps   tickets and disputes
  *   /places, /kundli, /birth-profiles   user_app   kundli generation (AstrologyAPI-backed)
+ *   /internal       a scheduler  jobs driven over HTTP where the process holds no timers
  */
 
 const express = require('express');
@@ -29,6 +30,7 @@ const notificationRoutes = require('./notification.routes');
 const adminRoutes = require('./admin.routes');
 const publicRoutes = require('./public.routes');
 const kundliRoutes = require('./kundli.routes');
+const internalRoutes = require('./internal.routes');
 
 const router = express.Router();
 
@@ -40,6 +42,7 @@ router.use('/chats', chatRoutes);
 router.use('/wallet', walletRoutes);
 router.use('/notifications', notificationRoutes);
 router.use('/admin', adminRoutes);
+router.use('/internal', internalRoutes);
 
 /** Settings, horoscope and support — not tied to one kind of account. */
 router.use('/', publicRoutes);

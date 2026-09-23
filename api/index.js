@@ -14,6 +14,16 @@
  * socket server and falls back to its REST path; see socket/index.js and the
  * getIO() call sites in services/. That fallback is what makes this safe:
  * nothing here is unreachable, it just stops arriving instantly.
+ *
+ * The recurring jobs index.js owns are not started here either, for the same
+ * reason — and unlike the socket there is no fallback for the billing sweep.
+ * Left undriven it means an active consultation is charged its opening minute
+ * and then nothing, and a package session never reaches its end: no 30s
+ * warning, no continue choice, no settle. A deployment on this entry MUST set
+ * INTERNAL_API_KEY and have a cron call POST /api/v1/internal/billing/sweep
+ * (routes/internal.routes.js) as often as it can. A host that keeps one
+ * process alive is the better answer: run index.js there and sockets and the
+ * 10s sweep both come back.
  */
 
 const { createApp } = require('../app');
