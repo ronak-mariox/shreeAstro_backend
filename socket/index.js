@@ -100,6 +100,19 @@ function initSocket(server) {
       }
     }
 
+    /**
+     * A seeker reconnecting inside the grace after their app went away: their
+     * consultation was marked for ending and is not any more. A no-op when
+     * nothing was marked, which is the ordinary case.
+     */
+    if (role === 'user') {
+      try {
+        await chatService.markUserBack(accountId);
+      } catch (error) {
+        console.error('[socket] seeker returned:', error.message);
+      }
+    }
+
     console.log(`[socket] ${role} ${accountId} connected (${socket.id})`);
 
     /** Everything the client may now emit is declared in chat.handlers.js. */
@@ -128,6 +141,26 @@ function initSocket(server) {
             await chatService.pauseSessionsForAstrologer(accountId);
           } catch (error) {
             console.error('[socket] presence:', error.message);
+          }
+        }
+      }
+
+      /**
+       * The seeker's app is gone — closed, killed, or off the network. Same
+       * "other devices?" test as the astrologer above: what is left in the room
+       * is this seeker's OTHER sockets, and only with none of them does the
+       * consultation count as abandoned. jobs/chatBilling.job.js's sweep is
+       * what actually ends it, if they are still gone once
+       * USER_RECONNECT_GRACE_SECONDS has passed.
+       */
+      if (role === 'user') {
+        const stillConnected = io.sockets.adapter.rooms.get(myRoom);
+
+        if (!stillConnected || stillConnected.size === 0) {
+          try {
+            await chatService.markUserAway(accountId);
+          } catch (error) {
+            console.error('[socket] seeker away:', error.message);
           }
         }
       }

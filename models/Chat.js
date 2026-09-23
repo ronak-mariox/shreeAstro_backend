@@ -47,6 +47,9 @@ const CHAT_EVENTS = {
   /** Server -> client only, from the astrologer's own socket connecting/disconnecting while a session is active (services/chat.service.js's pauseSessionsForAstrologer/resumeSessionsForAstrologer). */
   ASTROLOGER_LEFT: 'chat:astrologer_left',
   ASTROLOGER_JOINED: 'chat:astrologer_joined',
+  /** The seeker's own app went away, and came back — the mirror of the two above. */
+  USER_LEFT: 'chat:user_left',
+  USER_RETURNED: 'chat:user_returned',
   /** Server -> client only, package sessions (config/packages.js): ~30s left; time up (session paused on the seeker's choice); continued with another package; continued per-minute. */
   PACKAGE_WARNING: 'chat:package_warning',
   PACKAGE_ENDED: 'chat:package_ended',
@@ -247,6 +250,19 @@ const chatSessionSchema = new Schema(
      * dropped refunded — see chat.service.js's refundMinute.
      */
     astrologerDisconnectedAt: { type: Date },
+
+    /**
+     * When the SEEKER's last device dropped off — their app closed, killed, or
+     * lost the network (socket/index.js). Unlike the astrologer's disconnect
+     * above this does not pause anything: the consultation is over, the seeker
+     * left it. It is held open for `USER_RECONNECT_GRACE_SECONDS` only so a
+     * momentary drop — a tunnel, a backgrounded app that comes right back — is
+     * not mistaken for leaving; reconnecting inside that window clears this and
+     * the session carries on untouched. Past it, the sweep ends the session
+     * (reason 'user_disconnected'), billed to the moment recorded here rather
+     * than to the end of the wait.
+     */
+    userDisconnectedAt: { type: Date },
 
     requestedAt: { type: Date, default: Date.now },
     startedAt: { type: Date },

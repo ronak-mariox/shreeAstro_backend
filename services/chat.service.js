@@ -1280,6 +1280,94 @@ async function resumeSessionsForAstrologer(astrologerId, now = new Date()) {
 }
 
 /**
+ * The seeker's app went away mid-consultation — closed, killed, or off the
+ * network (socket/index.js's disconnect, once none of their devices are left).
+ *
+ * Deliberately NOT the astrologer's pause-and-hold treatment. When the
+ * astrologer drops, the seeker is still waiting to be served, so the meter
+ * stops and the session survives. When the SEEKER drops there is nobody left to
+ * serve: the consultation is over, and all that remains is to stop billing them
+ * for an astrologer they are no longer talking to. Before this existed, nothing
+ * happened at all — the sweep kept charging minute after minute to an app that
+ * had been closed.
+ *
+ * It is not ended on the spot only because a dropped socket cannot tell "closed
+ * the app" from "went through a tunnel". The session is marked, the astrologer
+ * is told, and tickUserAwayGrace ends it if they are still gone when the grace
+ * runs out.
+ */
+async function markUserAway(userId, now = new Date()) {
+  const sessions = await ChatSession.find({
+    user: userId,
+    status: 'active',
+    type: 'consultation',
+    userDisconnectedAt: null,
+  });
+
+  for (const chat of sessions) {
+    chat.userDisconnectedAt = now;
+    // eslint-disable-next-line no-await-in-loop
+    await chat.save();
+    emit(roomFor(chat._id), CHAT_EVENTS.USER_LEFT, {
+      chatId: String(chat._id),
+      endsInSeconds: env.consultation.userReconnectGraceSeconds,
+      serverTime: now,
+    });
+  }
+}
+
+/**
+ * They came back inside the grace — it was a blink, not a departure.
+ *
+ * Nothing to unwind: the mark never paused the meter or moved a package clock,
+ * precisely so that coming back needs no compensating adjustment and cannot be
+ * used to collect free time by dropping the connection on purpose.
+ */
+async function markUserBack(userId, now = new Date()) {
+  const sessions = await ChatSession.find({
+    user: userId,
+    status: 'active',
+    type: 'consultation',
+    userDisconnectedAt: { $ne: null },
+  });
+
+  for (const chat of sessions) {
+    // eslint-disable-next-line no-await-in-loop
+    await ChatSession.updateOne({ _id: chat._id }, { $set: { userDisconnectedAt: null } });
+    emit(roomFor(chat._id), CHAT_EVENTS.USER_RETURNED, {
+      chatId: String(chat._id),
+      serverTime: now,
+    });
+  }
+}
+
+/**
+ * Still gone when the grace runs out: end the consultation.
+ *
+ * Billed to `userDisconnectedAt`, not to now — the seconds spent waiting to see
+ * if they came back are ours, not theirs, and must not turn into another
+ * chargeable minute. `endedBy: 'user'` because that is who ended it (with
+ * `endReason` saying how), which also keeps the unused-package-minutes policy
+ * unambiguous: a seeker who walks out of their own package is not owed a refund
+ * for the part they chose not to use.
+ */
+async function tickUserAwayGrace(chat, now) {
+  const awayMs = now.getTime() - chat.userDisconnectedAt.getTime();
+  if (awayMs < env.consultation.userReconnectGraceSeconds * 1000) {
+    return { chatId: String(chat._id), action: 'user_away_grace' };
+  }
+
+  await endChat({
+    chatId: chat._id,
+    accountId: chat.user,
+    endedBy: 'user',
+    reason: 'user_disconnected',
+    effectiveEndAt: chat.userDisconnectedAt,
+  });
+  return { chatId: String(chat._id), action: 'ended_user_disconnected' };
+}
+
+/**
  * Reverses exactly one already-billed minute — both the seeker's debit and
  * the astrologer's matching earning from it — because the service that
  * minute paid for never happened. The only caller today is
@@ -1452,11 +1540,19 @@ async function runBillingSweep(now = new Date()) {
      * tickOneSession itself returns 'balance_paused' immediately whenever
      * `balanceExhaustedAt` is set, since it has no timeout to poll for either.
      */
+    /**
+     * The seeker being gone is checked first, and beats the astrologer's own
+     * pause: if both sides have dropped there is nothing to hold the session
+     * open for, and whatever the astrologer's pause would have preserved is
+     * moot once the consultation is over.
+     */
     // eslint-disable-next-line no-await-in-loop
     results.push(
-      chat.astrologerDisconnectedAt
-        ? await tickAstrologerDisconnectGrace(chat, now)
-        : await tickOneSession(chat, now),
+      chat.userDisconnectedAt
+        ? await tickUserAwayGrace(chat, now)
+        : chat.astrologerDisconnectedAt
+          ? await tickAstrologerDisconnectGrace(chat, now)
+          : await tickOneSession(chat, now),
     );
   }
 
@@ -1480,14 +1576,21 @@ async function runBillingSweep(now = new Date()) {
  * when it closes. If a minute genuinely cannot be afforded, the loop stops —
  * the same "charge what was actually there" grace the old code had.
  */
-async function endChat({ chatId, accountId, endedBy, reason }) {
+async function endChat({ chatId, accountId, endedBy, reason, effectiveEndAt }) {
   const [chat, role] = await participantChat(chatId, accountId);
 
   if (chat.status !== 'active') {
     throw ApiError.badRequest(`This chat is already ${chat.status}.`);
   }
 
-  const now = new Date();
+  /**
+   * `effectiveEndAt` is when the consultation actually finished, when that is
+   * not the moment this runs: a seeker whose app vanished left at the instant
+   * their socket dropped, not at the end of the grace spent making sure. It is
+   * what the tail is billed to, and what goes on the record. Every other caller
+   * ends a session in the present and passes nothing.
+   */
+  const now = effectiveEndAt ? new Date(effectiveEndAt) : new Date();
   const seconds = Math.max(Math.round((now.getTime() - chat.startedAt.getTime()) / 1000), 0);
   /**
    * Neither a crash-recovery timeout (tickOneSession, when a session's last
@@ -2095,6 +2198,8 @@ module.exports = {
   isPackagePhase,
   tickAstrologerDisconnectGrace,
   pauseSessionsForAstrologer,
+  markUserAway,
+  markUserBack,
   resumeSessionsForAstrologer,
   resumePausedSessionsForUser,
   refundMinute,
