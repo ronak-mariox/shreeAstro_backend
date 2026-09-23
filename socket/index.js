@@ -81,41 +81,17 @@ function initSocket(server) {
     const myRoom = `${role}:${accountId}`;
     socket.join(myRoom);
 
-    /**
-     * An astrologer holding a socket is what "Online" means in the seeker's
-     * directory. Presence is a nicety, so a failure is logged and shrugged off
-     * rather than allowed to break a connection that is otherwise fine.
-     */
-    if (role === 'astrologer') {
-      try {
-        await setAstrologerOnline(accountId, true);
-        /**
-         * Resumes any session this astrologer's own disconnect had paused —
-         * a no-op when nothing was paused. Reconnecting from a second device
-         * while a first is already up would also run this harmlessly.
-         */
-        await chatService.resumeSessionsForAstrologer(accountId);
-      } catch (error) {
-        console.error('[socket] presence:', error.message);
-      }
-    }
-
-    /**
-     * A seeker reconnecting inside the grace after their app went away: their
-     * consultation was marked for ending and is not any more. A no-op when
-     * nothing was marked, which is the ordinary case.
-     */
-    if (role === 'user') {
-      try {
-        await chatService.markUserBack(accountId);
-      } catch (error) {
-        console.error('[socket] seeker returned:', error.message);
-      }
-    }
-
     console.log(`[socket] ${role} ${accountId} connected (${socket.id})`);
 
-    /** Everything the client may now emit is declared in chat.handlers.js. */
+    /**
+     * Everything the client may now emit is declared in chat.handlers.js, and it
+     * is registered FIRST — before any of the awaiting presence work below.
+     *
+     * Both apps join their chat room the instant the socket connects, and an
+     * event that arrives while its handler is not yet registered is dropped: the
+     * ack never comes and the app waits for it forever. Every `await` between
+     * connecting and registering is that window held open, so there are none.
+     */
     registerChatHandlers(io, socket);
 
     socket.on('disconnect', async reason => {
@@ -167,6 +143,28 @@ function initSocket(server) {
 
       console.log(`[socket] ${role} ${accountId} disconnected (${reason})`);
     });
+
+    /**
+     * Presence and reconnect bookkeeping, last: it talks to the database, and
+     * nothing the client can send should have to wait behind it.
+     *
+     * An astrologer holding a socket is what "Online" means in the seeker's
+     * directory, and reconnecting resumes whatever their own disconnect had
+     * paused. A seeker reconnecting clears the mark that would otherwise have
+     * ended their consultation. Both are a no-op in the ordinary case, and both
+     * are a nicety next to the connection itself — a failure is logged and
+     * shrugged off rather than allowed to break a connection that is fine.
+     */
+    try {
+      if (role === 'astrologer') {
+        await setAstrologerOnline(accountId, true);
+        await chatService.resumeSessionsForAstrologer(accountId);
+      } else if (role === 'user') {
+        await chatService.markUserBack(accountId);
+      }
+    } catch (error) {
+      console.error('[socket] presence:', error.message);
+    }
   });
 
   return io;

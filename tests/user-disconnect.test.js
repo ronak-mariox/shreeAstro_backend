@@ -92,6 +92,12 @@ const reload = async id => ChatSession.findById(id).lean();
   check('nothing extra was charged for going', await balanceOf(gone.user._id) === 280);
   check('and the astrologer\'s own pause was NOT used for this', marked.astrologerDisconnectedAt == null);
 
+  section('the astrologer\'s app can read it, not only be pushed it');
+  /** A chat:user_left push is as missable as any other; a (re)join must recover the truth. */
+  const joined = await chatService.joinChat({ chatId: gone.chat._id, accountId: gone.astrologer._id });
+  check('the join reports them away, and since when', joined.userAwaySince?.getTime() === leftAt.getTime(), joined.userAwaySince);
+  check('...and how long is left of the grace', joined.userAwayEndsInSeconds === GRACE, joined.userAwayEndsInSeconds);
+
   section('a sweep inside the grace leaves it alone');
   const early = await chatService.runBillingSweep(seconds(leftAt, GRACE - 5));
   check('the session is held, not ended', early.some(r => r.chatId === String(gone.chat._id) && r.action === 'user_away_grace'), early);
@@ -103,6 +109,8 @@ const reload = async id => ChatSession.findById(id).lean();
   await chatService.markUserBack(gone.user._id);
   const back = await reload(gone.chat._id);
   check('the mark is cleared', back.userDisconnectedAt == null);
+  const joinedBack = await chatService.joinChat({ chatId: gone.chat._id, accountId: gone.astrologer._id });
+  check('and a join now reports them present', joinedBack.userAwaySince === null && joinedBack.userAwayEndsInSeconds === undefined, joinedBack.userAwaySince);
   check('active as if nothing happened', back.status === 'active');
   check('the billing clock was not moved — dropping the connection buys no free time',
     back.lastBilledAt?.getTime() === beforeReturn.lastBilledAt?.getTime()

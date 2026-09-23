@@ -2131,6 +2131,14 @@ async function joinChat({ chatId, accountId, lastSeq = 0 }) {
     /** Package sessions: the true current package clock/prompt, for the same reason as `paused` above. */
     billingMode: chat.billing?.mode,
     package: await packageViewFor(chat),
+    /**
+     * Whether the seeker's app is currently away, and when it went — same
+     * recovery reasoning as `paused` above. The astrologer's app shows this, and
+     * a chat:user_left push is exactly as missable as a low-balance one, so it
+     * must be readable from the (re)join rather than only from the event.
+     */
+    userAwaySince: chat.userDisconnectedAt || null,
+    userAwayEndsInSeconds: chat.userDisconnectedAt ? env.consultation.userReconnectGraceSeconds : undefined,
     serverTime: new Date(),
   };
 }
