@@ -11,6 +11,7 @@
  */
 
 const mongoose = require('mongoose');
+const env = require('../config/env');
 const User = require('../models/User');
 const Astrologer = require('../models/Astrologer');
 const AstrologerProfile = require('../models/AstrologerProfile');
@@ -235,6 +236,30 @@ async function listTransactions({ ownerRole, ownerId, filter = 'all', page = 1, 
 }
 
 /**
+ * Refuses a top-up that nothing would verify, where that matters.
+ *
+ * With no gateway wired up, start + confirm credit a wallet on the word of
+ * whoever asked. In development that is the point. In production it is free
+ * money — and it is spent on consultations that pay astrologers real rupees —
+ * so it is closed there unless ALLOW_UNVERIFIED_TOPUPS explicitly opens it.
+ *
+ * Deliberately not a silent no-op: the seeker is told recharge is unavailable,
+ * and an admin can still credit the wallet by hand for money collected another
+ * way (POST /admin/wallets/adjust). Delete this when a gateway verifies a
+ * payment between the two calls.
+ */
+function assertTopUpsAllowed() {
+  if (env.isProduction && !env.allowUnverifiedTopUps) {
+    throw new ApiError(
+      503,
+      'Online recharge is temporarily unavailable. Please contact support to add money.',
+      undefined,
+      'payments_unavailable',
+    );
+  }
+}
+
+/**
  * Starts a top-up.
  *
  * There is no payment gateway wired up yet, so this creates the row as
@@ -242,6 +267,8 @@ async function listTransactions({ ownerRole, ownerId, filter = 'all', page = 1, 
  * whichever) lands, create the gateway order here and return its id.
  */
 async function startTopUp({ userId, amount }) {
+  assertTopUpsAllowed();
+
   const rupees = Math.round(Number(amount));
   const settings = await settingsService.get();
   const min = settings.minRecharge ?? MIN_TOPUP;
@@ -283,6 +310,9 @@ async function startTopUp({ userId, amount }) {
  * When a real gateway is added, verify its signature before calling this.
  */
 async function confirmTopUp({ userId, transactionId, paymentId, method }) {
+  /** Again here, not only in startTopUp: a row opened earlier must not become creditable later. */
+  assertTopUpsAllowed();
+
   const transaction = await WalletTransaction.findOne({
     _id: transactionId,
     owner: userId,

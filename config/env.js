@@ -64,11 +64,24 @@ const env = {
     ),
 
     /**
-     * Development only.
+     * A code that signs in as any account.
      *
-     * In production this MUST be empty/disabled.
+     * Standing in for real OTP delivery until MSG91 credentials land, so it is
+     * allowed in production — deliberately, and only when something actually
+     * sets it: no default here, because a value defaulted in is a value nobody
+     * chose. Unset in production and it is off, which with no SMS or email
+     * provider configured means nobody can sign in at all; the boot check at
+     * the bottom of this file says so either way.
+     *
+     * While it is set, it is effectively one password for every account, so
+     * services/otp.service.js counts wrong guesses of it against the same
+     * per-destination budget as a real code, and the OTP endpoints are rate
+     * limited per caller (middlewares/rateLimit.middleware.js). Remove it the
+     * day delivery works.
      */
-    masterCode: process.env.OTP_MASTER_CODE ?? '123456',
+    masterCode: isProduction
+      ? process.env.OTP_MASTER_CODE || ''
+      : process.env.OTP_MASTER_CODE ?? '123456',
   },
 
   /**
@@ -224,6 +237,37 @@ const env = {
   },
 
   /**
+   * Whether a wallet top-up may complete with no payment gateway behind it.
+   *
+   * There is no gateway wired up yet: services/wallet.service.js's startTopUp
+   * opens a pending row and confirmTopUp credits the wallet, with nothing in
+   * between verifying that anyone paid. That is fine in development and it is
+   * how the app has always been walked through — but in production it is free
+   * money, spendable on consultations that pay astrologers real rupees out the
+   * other side.
+   *
+   * So in production that path is closed unless this explicitly opens it.
+   * Admins can still credit a wallet by hand (POST /admin/wallets/adjust) for
+   * payments collected some other way, and the two-step start/confirm shape is
+   * unchanged, so wiring a real gateway means filling the gap between them and
+   * deleting this.
+   */
+  allowUnverifiedTopUps: process.env.ALLOW_UNVERIFIED_TOPUPS === 'true',
+
+  /**
+   * The shared secret an external scheduler presents to drive a job over HTTP
+   * (routes/internal.routes.js).
+   *
+   * Only needed where the server cannot hold its own timers: the Vercel
+   * serverless entry (api/index.js) never starts the billing sweep, so without
+   * a cron calling in, an active consultation is billed its first minute and
+   * then nothing, and a package never reaches its end. On a persistent host
+   * index.js runs the sweep itself and this can stay unset, which leaves the
+   * endpoint switched off entirely.
+   */
+  internalApiKey: process.env.INTERNAL_API_KEY || '',
+
+  /**
    * CORS
    *
    * Example:
@@ -249,10 +293,46 @@ if (env.jwtSecret === env.refreshSecret) {
   );
 }
 
-// Master OTP must NEVER be enabled in production.
+/**
+ * The master OTP in production: allowed, never silent.
+ *
+ * It used to be refused outright, which is the right end state — but real OTP
+ * delivery is not configured yet, so refusing it would mean a live deployment
+ * nobody could sign in to. So it boots, and says exactly what is switched on,
+ * every start, where anyone reading the logs will see it.
+ */
 if (env.isProduction && env.otp.masterCode) {
-  throw new Error(
-    'OTP_MASTER_CODE must be empty in production.'
+  console.warn(
+    '[env] WARNING: OTP_MASTER_CODE is set in production — this one code signs in as ANY account. ' +
+      'It is a stand-in for SMS/email delivery: configure MSG91 (INTEGRATION_SMS_*) or SMTP and unset it.',
+  );
+}
+
+/**
+ * Self-serve top-ups with nothing verifying payment, in production, on purpose.
+ * Worth saying out loud on every start for as long as it lasts.
+ */
+if (env.isProduction && env.allowUnverifiedTopUps) {
+  console.warn(
+    '[env] WARNING: ALLOW_UNVERIFIED_TOPUPS is on — wallet top-ups complete with no payment gateway ' +
+      'behind them, so anyone signed in can credit their own wallet for free. Wire a gateway and unset it.',
+  );
+}
+
+/**
+ * The other way round: no master code and no way to deliver a real one means
+ * every login request stores a code that reaches nobody. Worth one line at
+ * boot rather than a support thread about codes never arriving.
+ */
+if (
+  env.isProduction &&
+  !env.otp.masterCode &&
+  process.env.INTEGRATION_SMS_ENABLED !== 'true' &&
+  process.env.INTEGRATION_EMAIL_ENABLED !== 'true'
+) {
+  console.warn(
+    '[env] WARNING: no OTP delivery is configured (INTEGRATION_SMS_* / INTEGRATION_EMAIL_*) and ' +
+      'OTP_MASTER_CODE is unset — login codes will be written to this log and nowhere else, so nobody can sign in.',
   );
 }
 
