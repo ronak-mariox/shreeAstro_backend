@@ -205,4 +205,12 @@ async function createBirthProfile(userId, input, origin) {
   return { id: String(profile._id), status: profile.status };
 }
 
-module.exports = { createBirthProfile, runBatch, countMissingSections, BATCH_ENDPOINTS, SADHESATI_TTL_SECONDS };
+module.exports = {
+  createBirthProfile,
+  runBatch,
+  countMissingSections,
+  /** Exported so a caller can read the same birth moment this would store, rather than parsing it a second way. */
+  parseAndValidateBirthMoment,
+  BATCH_ENDPOINTS,
+  SADHESATI_TTL_SECONDS,
+};

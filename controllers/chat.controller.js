@@ -77,6 +77,28 @@ const kundli = asyncHandler(async (req, res) => {
   return res.json(result);
 });
 
+/**
+ * POST /api/v1/chats/:chatId/kundli — generate the seeker's kundli from inside
+ * the consultation, when there is no saved chart for what is being asked about.
+ * Stored against the seeker, so it is there for both of them afterwards.
+ */
+const generateKundli = asyncHandler(async (req, res) => {
+  const result = await kundliReadService.generateSeekerKundliForChat({
+    chatId: req.params.chatId,
+    accountId: req.account.accountId,
+    details: {
+      fullName: req.body.fullName,
+      gender: req.body.gender,
+      dateOfBirth: req.body.dateOfBirth,
+      timeOfBirth: req.body.timeOfBirth,
+      place: req.body.place,
+      placeId: req.body.placeId,
+    },
+    origin: `${req.protocol}://${req.get('host')}`,
+  });
+  return res.status(201).json(result);
+});
+
 /** POST /api/v1/chats/:chatId/accept — the astrologer takes it. */
 const accept = asyncHandler(async (req, res) => {
   const chat = await chatService.acceptChat({
@@ -228,4 +250,4 @@ const askAi = asyncHandler(async (req, res) => {
   return res.status(201).json(result);
 });
 
-module.exports = { aiThread, askAi, precheck, state, request, continueAfterPackage, kundli, accept, reject, cancel, end, rate, list, messages, send };
+module.exports = { aiThread, askAi, precheck, state, request, continueAfterPackage, kundli, generateKundli, accept, reject, cancel, end, rate, list, messages, send };

@@ -9,7 +9,7 @@
 
 const { body, param } = require('express-validator');
 
-const { CHANNELS } = require('../models/constants');
+const { CHANNELS, GENDERS } = require('../models/constants');
 const { validate } = require('../middlewares/validate.middleware');
 
 /** POST /chats/precheck */
@@ -49,4 +49,35 @@ const chatIdParam = [
   validate,
 ];
 
-module.exports = { precheck, request, continueAfterPackage, chatIdParam };
+/** Same formats POST /birth-profiles takes, since the same generation runs behind both. */
+const DATE_PATTERN = /^(\d{1,2})[/-](\d{1,2})[/-](\d{4})$/;
+const TIME_PATTERN = /^(\d{1,2})\s*:\s*(\d{2})(\s*[APap][Mm])?$/;
+
+/**
+ * POST /chats/:chatId/kundli — generating the seeker's kundli from inside the
+ * consultation.
+ *
+ * `place` is a typed name here, unlike POST /birth-profiles's `placeId`: the
+ * astrologer's form has no place search behind it, so the name is searched
+ * server-side and lat/lon still only ever come from the provider. A `placeId`
+ * is accepted too, for a caller that does have search.
+ */
+const generateKundli = [
+  param('chatId').isMongoId().withMessage('Unknown chat.'),
+
+  body('fullName').trim().isLength({ min: 2 }).withMessage('Enter a full name.'),
+  body('gender').optional({ values: 'falsy' }).isIn(GENDERS).withMessage('Pick a gender.'),
+
+  body('dateOfBirth').trim().matches(DATE_PATTERN).withMessage('Use the format DD/MM/YYYY.'),
+  body('timeOfBirth').trim().matches(TIME_PATTERN).withMessage('Use the format HH:MM AM/PM.'),
+
+  body('place')
+    .if(body('placeId').not().exists({ values: 'falsy' }))
+    .trim()
+    .isLength({ min: 3 })
+    .withMessage('Enter the birth place (at least 3 letters).'),
+
+  validate,
+];
+
+module.exports = { precheck, request, continueAfterPackage, chatIdParam, generateKundli };

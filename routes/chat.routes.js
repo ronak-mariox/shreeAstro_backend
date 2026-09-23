@@ -43,6 +43,8 @@ router.post('/:chatId/reject', authorize('astrologer'), chatController.reject);
 router.get('/:chatId', chatValidator.chatIdParam, chatController.state);
 /** The seeker's saved kundli — what the astrologer's chat header and "Generate Kundli" open. */
 router.get('/:chatId/kundli', chatValidator.chatIdParam, chatController.kundli);
+/** Generating it from inside the consultation, when there is nothing saved to show. */
+router.post('/:chatId/kundli', chatValidator.generateKundli, chatController.generateKundli);
 router.post('/:chatId/end', chatController.end);
 router.get('/:chatId/messages', chatController.messages);
 router.post('/:chatId/messages', chatController.send);
