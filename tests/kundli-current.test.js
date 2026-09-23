@@ -19,6 +19,7 @@ const mongoose = require('mongoose');
 const User = require('../models/User');
 const UserProfile = require('../models/UserProfile');
 const BirthProfile = require('../models/BirthProfile');
+const KundliCache = require('../models/KundliCache');
 const GeoCache = require('../models/GeoCache');
 const client = require('../services/astrologyApi.client');
 const kundliService = require('../services/kundli.service');
@@ -155,7 +156,7 @@ const resetCounts = () => { kundliCalls = []; geoCalls = []; };
     user._id,
     { ...birth, dateOfBirth: '16/08/1995', placeId: mumbai },
     undefined,
-    { syncOwnProfile: true },
+    { asSeeker: true },
   );
   const synced = (await UserProfile.findOne({ user: user._id }).lean()).birthDetails;
   check('the account now holds the place the chart was cast from', synced.place.formatted === secondDoc.birthDetails.place.formatted, synced.place.formatted);
@@ -166,6 +167,56 @@ const resetCounts = () => { kundliCalls = []; geoCalls = []; };
     && new Date(synced.dateOfBirth).getTime() === new Date(secondDoc.birthDetails.dateOfBirth).getTime());
   check('syncing cost nothing — the chart was already cached', kundliCalls.length === 0, kundliCalls);
   check('and it still resolves to the same chart', (await current()).profileId === second.id);
+  /** Generating as the seeker also clears out what it supersedes — the 15/08 chart above. */
+  check('the chart it replaced is gone', (await BirthProfile.findById(first.id)) === null);
+  check('leaving one chart of their own', await BirthProfile.countDocuments({ user: user._id, relation: 'self' }) === 1);
+
+  section('generating a new chart of their own deletes the ones it supersedes');
+  check('one chart of their own going in', await BirthProfile.countDocuments({ user: user._id, relation: 'self' }) === 1);
+
+  /** Someone they asked about — an astrologer generated this during a reading. */
+  const father = await kundliService.createBirthProfile(user._id, {
+    fullName: 'Arjun\'s Father', gender: 'male', dateOfBirth: '22/03/1965', timeOfBirth: '11:15 AM',
+    relation: 'family', placeId: delhi,
+  });
+  /** The birth the superseded chart was cast from — its cached sections must outlive it. */
+  const supersededHash = secondDoc.birthHash;
+  const cachedForSuperseded = await KundliCache.countDocuments({ birthHash: supersededHash });
+
+  const third = await kundliService.createBirthProfile(
+    user._id,
+    { ...birth, dateOfBirth: '17/08/1995', placeId: mumbai },
+    undefined,
+    { asSeeker: true },
+  );
+  check('it says how many it replaced', third.replaced === 1, third);
+  const ownCharts = await BirthProfile.find({ user: user._id, relation: 'self' }).lean();
+  check('one chart of their own remains — the new one', ownCharts.length === 1 && String(ownCharts[0]._id) === third.id, ownCharts.length);
+  check('the old id is gone from the database', (await BirthProfile.findById(second.id)) === null);
+  check('and the tab resolves to the new one', (await current()).profileId === third.id);
+
+  section('what it must NOT throw away');
+  check('a chart for someone else they asked about survives', (await BirthProfile.findById(father.id)) !== null);
+  check('the deleted chart\'s cached sections are still there — those credits are already paid for',
+    await KundliCache.countDocuments({ birthHash: supersededHash }) === cachedForSuperseded && cachedForSuperseded > 0,
+    { before: cachedForSuperseded, after: await KundliCache.countDocuments({ birthHash: supersededHash }) });
+
+  /** Which is what makes going back to the old birth details free rather than paid for twice. */
+  resetCounts();
+  const backAgain = await kundliService.createBirthProfile(
+    user._id,
+    { ...birth, dateOfBirth: '16/08/1995', placeId: mumbai },
+    undefined,
+    { asSeeker: true },
+  );
+  check('putting the old birth details back re-casts that chart without a provider call', kundliCalls.length === 0, kundliCalls);
+  check('...and that one is now the only chart of their own again', await BirthProfile.countDocuments({ user: user._id, relation: 'self' }) === 1);
+  check('...with the superseded one deleted in its turn', (await BirthProfile.findById(third.id)) === null && backAgain.replaced === 1);
+  check('the chart it re-cast is the same birth as before, from cache', backAgain.id !== third.id);
+
+  /** Leave the account pointing at a chart that exists, for the checks below. */
+  const finalDoc = await BirthProfile.findById(backAgain.id).lean();
+  await setProfileBirth(finalDoc.birthDetails.dateOfBirth, finalDoc.birthDetails.timeOfBirth, finalDoc.birthDetails.place.city);
 
   section('an astrologer generating during a consultation does NOT rewrite the account');
   await setProfileBirth(secondDoc.birthDetails.dateOfBirth, secondDoc.birthDetails.timeOfBirth, secondDoc.birthDetails.place.city);
@@ -175,10 +226,11 @@ const resetCounts = () => { kundliCalls = []; geoCalls = []; };
 
   section('generating the same birth twice costs nothing and makes no duplicate');
   resetCounts();
+  const standing = (await current()).profileId;
   const again = await kundliService.createBirthProfile(user._id, { ...birth, dateOfBirth: '16/08/1995', placeId: mumbai });
-  check('the existing chart is reused', again.id === second.id && again.reused === true);
+  check('the existing chart is reused', again.id === standing && again.reused === true, { again: again.id, standing });
   check('no provider call, no geo call', kundliCalls.length === 0 && geoCalls.length === 0);
-  check('still one BirthProfile per birth for this seeker', await BirthProfile.countDocuments({ user: user._id }) === 2);
+  check('no duplicate: their own chart, plus the one for their father', await BirthProfile.countDocuments({ user: user._id }) === 2);
 
   section('HTTP');
   const { createApp } = require('../app');
@@ -189,7 +241,7 @@ const resetCounts = () => { kundliCalls = []; geoCalls = []; };
     headers: { Authorization: `Bearer ${signAccessToken(String(user._id), 'user')}` },
   });
   const body = await res.json();
-  check('GET /kundli/me answers the app', res.status === 200 && body.found === true && body.profileId === second.id, body);
+  check('GET /kundli/me answers the app', res.status === 200 && body.found === true && body.profileId === standing, body);
   const anon = await fetch(`http://127.0.0.1:${server.address().port}/api/v1/kundli/me`);
   check('and needs a signed-in seeker', anon.status === 401);
   server.close();

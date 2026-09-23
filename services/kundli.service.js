@@ -131,6 +131,37 @@ async function runBatch(birthProfile, origin) {
  * today's), since historical Indian offsets were not always +5:30.
  */
 /**
+ * Throws away the seeker's superseded charts: they generated a new one of their
+ * own, so the older ones are for birth details they no longer claim.
+ *
+ * Only their own — `relation: 'self'`. A chart for someone they asked about (a
+ * partner, a parent, whoever an astrologer generated for during a reading) is
+ * not superseded by the seeker correcting their own birth time, and deleting it
+ * would throw away a reading nobody asked to lose.
+ *
+ * KundliCache is deliberately left alone. Its rows are keyed by the birth moment
+ * rather than by the profile, so they are shared with anyone else born at the
+ * same moment and they are the record of credits already spent — deleting them
+ * would mean paying AstrologyAPI again, and would also mean a seeker who put
+ * their old birth details back paid twice for one chart. The chart SVG is stored
+ * under the same birth-moment key for the same reason; only the profile's memory
+ * of having uploaded it goes, and rebuilding that reads the cache, not the
+ * provider.
+ */
+async function pruneSupersededSelfCharts(userId, keepId) {
+  const { deletedCount } = await BirthProfile.deleteMany({
+    user: userId,
+    relation: 'self',
+    _id: { $ne: keepId },
+  });
+
+  if (deletedCount > 0) {
+    console.log(`[kundli] replaced ${deletedCount} superseded chart(s) for user ${userId}`);
+  }
+  return deletedCount;
+}
+
+/**
  * Writes the birth details a chart was actually cast from back onto the
  * seeker's own account.
  *
@@ -164,7 +195,7 @@ async function syncOwnBirthDetails(userId, { dob, tob, place, timezone }) {
   );
 }
 
-async function createBirthProfile(userId, input, origin, { syncOwnProfile = false } = {}) {
+async function createBirthProfile(userId, input, origin, { asSeeker = false } = {}) {
   const { fullName, gender, label, relation, dateOfBirth, timeOfBirth, placeId } = input;
 
   const { dob, tob } = parseAndValidateBirthMoment(dateOfBirth, timeOfBirth);
@@ -209,8 +240,10 @@ async function createBirthProfile(userId, input, origin, { syncOwnProfile = fals
       await existing.save();
     }
     /** Still worth syncing: this is the chart the account's details now point at. */
-    if (syncOwnProfile && isOwnChart) {
+    if (asSeeker && isOwnChart) {
       await syncOwnBirthDetails(userId, { dob, tob, place, timezone: place.timezone });
+      const replaced = await pruneSupersededSelfCharts(userId, existing._id);
+      return { id: String(existing._id), status: existing.status, reused: true, replaced };
     }
     return { id: String(existing._id), status: existing.status, reused: true };
   }
@@ -243,8 +276,10 @@ async function createBirthProfile(userId, input, origin, { syncOwnProfile = fals
   profile.status = await runBatch(profile, origin);
   await profile.save();
 
-  if (syncOwnProfile && isOwnChart) {
+  if (asSeeker && isOwnChart) {
     await syncOwnBirthDetails(userId, { dob, tob, place, timezone: place.timezone });
+    const replaced = await pruneSupersededSelfCharts(userId, profile._id);
+    return { id: String(profile._id), status: profile.status, replaced };
   }
 
   return { id: String(profile._id), status: profile.status };
@@ -252,6 +287,7 @@ async function createBirthProfile(userId, input, origin, { syncOwnProfile = fals
 
 module.exports = {
   createBirthProfile,
+  pruneSupersededSelfCharts,
   runBatch,
   countMissingSections,
   /** Exported so a caller can read the same birth moment this would store, rather than parsing it a second way. */
