@@ -12,7 +12,9 @@ const { ChatSession } = require('../models/Chat');
 const ApiError = require('../utils/ApiError');
 const { getKundliSection } = require('./kundliCache.service');
 const { getChartImageUrl } = require('./chartStorage.service');
-const { SADHESATI_TTL_SECONDS } = require('./kundli.service');
+const geoService = require('./geo.service');
+const kundliService = require('./kundli.service');
+const { SADHESATI_TTL_SECONDS } = kundliService;
 const {
   normalizeAstroDetails,
   normalizePlanets,
@@ -187,9 +189,8 @@ async function getCurrentKundli(userId) {
     return { found: false, reason: 'birth_details_missing' };
   }
 
-  const fingerprint = birthFingerprint(details);
   const candidates = await BirthProfile.find({ user: userId }).sort({ createdAt: -1 }).lean();
-  const match = candidates.find(candidate => birthFingerprint(candidate.birthDetails) === fingerprint);
+  const match = candidates.find(candidate => isSameBirth(details, candidate.birthDetails));
 
   if (!match) {
     /** Their details changed (or they never generated one): a fresh chart is needed. */
@@ -199,17 +200,48 @@ async function getCurrentKundli(userId) {
 }
 
 /**
- * What makes two births the same chart, for the purpose above: the day, the
- * minute, and the place as the place search labelled it. (The cache's own key
- * is `birthHash` — computed from the geocoded coordinates — but the seeker's
- * profile keeps only the place's text, so this is what can be compared.)
+ * The same place, written by whoever wrote it.
+ *
+ * Coordinates when both sides have them — that is what the chart itself was
+ * cast from. Otherwise the city, because the two records genuinely spell the
+ * place differently: the account's own birth details keep what the seeker
+ * picked in the form ("Aligarh", country "India"), while a generated chart
+ * keeps what the provider returned ("Aligarh, IN", country "IN"), and only the
+ * seeker's side is missing the coordinates.
+ *
+ * Comparing the formatted text, as this used to, therefore never matched — so
+ * the Kundli tab offered "Generate Kundli" even immediately after generating
+ * one, and pressing it again cast another.
  */
-function birthFingerprint(details) {
-  return [
-    dayOf(details?.dateOfBirth) || '',
-    details?.timeOfBirth || '',
-    (details?.place?.formatted || '').trim().toLowerCase(),
-  ].join('|');
+function coordsOf(place) {
+  if (place?.latitude == null || place?.longitude == null) {
+    return null;
+  }
+  /** 3 decimal places is ~100m — the same birth place, not the same GPS reading. */
+  return `${Number(place.latitude).toFixed(3)},${Number(place.longitude).toFixed(3)}`;
+}
+
+function cityOf(place) {
+  const city = place?.city || String(place?.formatted || '').split(',')[0];
+  return String(city).trim().toLowerCase();
+}
+
+function samePlace(a, b) {
+  const [left, right] = [coordsOf(a), coordsOf(b)];
+  return left && right ? left === right : cityOf(a) === cityOf(b);
+}
+
+/**
+ * Whether two sets of birth details describe the same chart: the day, the
+ * minute, and the place. A chart is cast from exactly these, so anything that
+ * differs here is a different chart and has to be generated.
+ */
+function isSameBirth(a, b) {
+  return (
+    dayOf(a?.dateOfBirth) === dayOf(b?.dateOfBirth)
+    && (a?.timeOfBirth || '') === (b?.timeOfBirth || '')
+    && samePlace(a?.place, b?.place)
+  );
 }
 
 /** A Date (or ISO string) -> "YYYY-MM-DD" in UTC, the way birth dates are stored (UTC midnight). */
@@ -231,24 +263,8 @@ const birthSummary = details =>
       }
     : undefined;
 
-/**
- * GET /chats/:chatId/kundli — the SEEKER's already-generated kundli, for the
- * astrologer in that consultation (or the seeker themself).
- *
- * Which chart: the seeker's saved birth profile whose date (and, when given,
- * time) of birth matches the details they filed on this consultation's
- * intake — so the astrologer sees the chart of the person being asked
- * about. With no birth date on the intake, their latest "self" profile. If
- * nothing matches, `found: false` with the intake's details, so the app can
- * say so and pre-fill its form; a chart for someone else is never shown in
- * its place.
- *
- * Read-only and credit-free: the overview comes from the same stored
- * sections the seeker's own kundli screen reads, and dasha is the
- * mahadasha list already stored when the kundli was generated (the lazily
- * fetched antardasha breakdown is left out, so opening this never spends).
- */
-async function getSeekerKundliForChat({ chatId, accountId, origin }) {
+/** The chat, with the caller proved to be in it. */
+async function participantChatOf(chatId, accountId) {
   const chat = await ChatSession.findById(chatId).catch(() => null);
   if (!chat) {
     throw ApiError.notFound('Chat not found.');
@@ -256,21 +272,72 @@ async function getSeekerKundliForChat({ chatId, accountId, origin }) {
   if (!chat.roleOf(accountId)) {
     throw ApiError.forbidden('You are not part of this chat.');
   }
+  return chat;
+}
 
-  const intake = chat.intake?.birthDetails;
+/**
+ * Which of the seeker's saved charts to show for this consultation, and how
+ * well it actually answers the intake.
+ *
+ * Every candidate is the seeker's own — they are all BirthProfiles belonging to
+ * `chat.user` — so this is never about showing a stranger's chart. It is about
+ * being honest, because the intake form and the saved chart routinely disagree:
+ * the intake's birth date and time are typed again per consultation (and start
+ * from a default), so a seeker whose kundli is for 13/05/2004 08:00 may well
+ * file an intake saying 01/01/2000 11:00.
+ *
+ * Requiring an exact match, as this used to, meant the astrologer was shown
+ * nothing at all in that case — with a fully generated kundli sitting in the
+ * database. So the match is graded instead, best first, and named in the
+ * response so the app can say which it got:
+ *
+ *   'intake' — same birth date, and same time where both give one.
+ *   'date'   — same birth date, different time of birth.
+ *   'seeker' — nothing matched the intake; this is the seeker's own chart.
+ *
+ * (generateSeekerKundliForChat adds a fourth, 'generated': a chart that was
+ * just made from details someone typed, which answers those details by
+ * definition and needs none of this guessing.)
+ *
+ * `status: 'ready'` first within each grade (a pending or failed profile has
+ * nothing to draw), then the most recently created.
+ */
+function pickProfileForChat(profiles, intake) {
+  const readyFirst = [...profiles].sort(
+    (a, b) => Number(b.status === 'ready') - Number(a.status === 'ready'),
+  );
+
   const intakeDay = dayOf(intake?.dateOfBirth);
-  const profiles = await BirthProfile.find({ user: chat.user }).sort({ createdAt: -1 }).lean();
+  const sameDay = intakeDay
+    ? readyFirst.filter(entry => dayOf(entry.birthDetails?.dateOfBirth) === intakeDay)
+    : [];
 
-  const profile = intakeDay
-    ? profiles.find(entry =>
-        dayOf(entry.birthDetails?.dateOfBirth) === intakeDay
-        && (!intake?.timeOfBirth || !entry.birthDetails?.timeOfBirth || entry.birthDetails.timeOfBirth === intake.timeOfBirth))
-    : profiles.find(entry => entry.relation === 'self') ?? profiles[0];
-
-  if (!profile) {
-    return { found: false, birthDetails: birthSummary(intake) };
+  const sameMoment = sameDay.find(
+    entry =>
+      !intake?.timeOfBirth
+      || !entry.birthDetails?.timeOfBirth
+      || entry.birthDetails.timeOfBirth === intake.timeOfBirth,
+  );
+  if (sameMoment) {
+    return { profile: sameMoment, match: 'intake' };
+  }
+  if (sameDay.length > 0) {
+    return { profile: sameDay[0], match: 'date' };
   }
 
+  const own = readyFirst.find(entry => entry.relation === 'self') || readyFirst[0];
+  return own ? { profile: own, match: 'seeker' } : null;
+}
+
+/**
+ * Everything the astrologer's kundli sheet draws, from one saved profile.
+ *
+ * Read-only and credit-free: the overview comes from the same stored sections
+ * the seeker's own kundli screen reads, and dasha is the mahadasha list already
+ * stored when the kundli was generated (the lazily fetched antardasha breakdown
+ * is left out, so opening this never spends).
+ */
+async function kundliPayloadFor(profile, match, intake, origin) {
   const profileId = String(profile._id);
   const overview = await getKundliOverview(profileId, profile.user, origin);
 
@@ -287,7 +354,15 @@ async function getSeekerKundliForChat({ chatId, accountId, origin }) {
     found: true,
     profileId,
     status: profile.status,
+    /** How well this chart answers the intake — see pickProfileForChat. */
+    match,
     birthDetails: birthSummary(profile.birthDetails),
+    /**
+     * What the seeker actually filed on this consultation, whenever that is
+     * not what the chart is for — so the astrologer sees the difference rather
+     * than assuming the chart matches the question.
+     */
+    intakeBirthDetails: match === 'intake' ? undefined : birthSummary(intake),
     chart: overview.chart,
     lagna: overview.lagna,
     nakshatra: overview.nakshatra,
@@ -297,10 +372,109 @@ async function getSeekerKundliForChat({ chatId, accountId, origin }) {
   };
 }
 
+/**
+ * GET /chats/:chatId/kundli — the SEEKER's already-generated kundli, for the
+ * astrologer in that consultation (or the seeker themself).
+ *
+ * Which chart, and how closely it matches what was asked, is pickProfileForChat
+ * above. With no saved chart at all, `found: false` with the intake's details,
+ * so the app can say so, pre-fill its form, and generate one from there
+ * (generateSeekerKundliForChat below).
+ */
+async function getSeekerKundliForChat({ chatId, accountId, origin }) {
+  const chat = await participantChatOf(chatId, accountId);
+
+  const intake = chat.intake?.birthDetails;
+  const profiles = await BirthProfile.find({ user: chat.user }).sort({ createdAt: -1 }).lean();
+  const picked = pickProfileForChat(profiles, intake);
+
+  if (!picked) {
+    return { found: false, birthDetails: birthSummary(intake) };
+  }
+
+  return kundliPayloadFor(picked.profile, picked.match, intake, origin);
+}
+
+/**
+ * POST /chats/:chatId/kundli — generate the seeker's kundli from inside the
+ * consultation, when there is no saved chart to show (or none for the birth
+ * details being asked about).
+ *
+ * The chart is generated FOR THE SEEKER, not for the astrologer: it is stored
+ * against `chat.user`, exactly as if the seeker had generated it from their own
+ * Kundli tab, so it is there next time either of them opens it and is never
+ * paid for twice. Which is also why either side of the consultation may call
+ * this — the astrologer typing the details in during a reading, or the seeker's
+ * own app.
+ *
+ * Coordinates are never taken from the caller. A `placeId` from /places/search
+ * is resolved as usual; a typed place name is searched here and the first match
+ * used, which is what the astrologer's form gives (it has no place search of
+ * its own) and keeps lat/lon coming only from the provider.
+ */
+async function generateSeekerKundliForChat({ chatId, accountId, details, origin }) {
+  const chat = await participantChatOf(chatId, accountId);
+
+  const { fullName, gender, dateOfBirth, timeOfBirth, place, placeId } = details || {};
+
+  let resolvedPlaceId = placeId;
+  if (!resolvedPlaceId) {
+    const matches = await geoService.searchPlaces(place);
+    if (matches.length === 0) {
+      throw ApiError.badRequest('That birth place could not be found. Try the city name on its own.', {
+        place: 'Not found — try the city name on its own.',
+      });
+    }
+    resolvedPlaceId = matches[0].id;
+  }
+
+  const intake = chat.intake?.birthDetails;
+
+  /**
+   * `relation` decides what this chart is to the seeker, and the profile it
+   * would reuse (createBirthProfile dedupes on user + birth moment + relation).
+   * Their own birth details are their 'self' chart; anyone else they are asking
+   * about is 'other', so generating for a relative never overwrites their own.
+   */
+  const ownProfile = await UserProfile.findOne({ user: chat.user }).lean();
+  const ownDetails = ownProfile?.birthDetails;
+  /** Parsed by the same helper createBirthProfile will use, so this cannot read it differently. */
+  const { dob } = kundliService.parseAndValidateBirthMoment(dateOfBirth, timeOfBirth);
+  const isOwnBirth = !ownDetails?.dateOfBirth || dayOf(ownDetails.dateOfBirth) === dayOf(dob);
+
+  const created = await kundliService.createBirthProfile(
+    chat.user,
+    {
+      fullName: fullName || intake?.fullName,
+      gender: gender || intake?.gender,
+      label: fullName || intake?.fullName,
+      relation: isOwnBirth ? 'self' : 'other',
+      dateOfBirth,
+      timeOfBirth,
+      placeId: resolvedPlaceId,
+    },
+    origin,
+  );
+
+  const profile = await BirthProfile.findById(created.id).lean();
+  if (!profile) {
+    throw ApiError.notFound('Kundli not found.');
+  }
+
+  /**
+   * 'generated', not a graded match: this chart is exactly the details that
+   * were just submitted. Whether those details also answer the intake is a
+   * separate thing, and `intakeBirthDetails` carries it.
+   */
+  return kundliPayloadFor(profile, 'generated', intake, origin);
+}
+
 module.exports = {
   getCurrentKundli,
-  birthFingerprint,
+  isSameBirth,
   getSeekerKundliForChat,
+  generateSeekerKundliForChat,
+  pickProfileForChat,
   loadOwnedBirthProfile,
   getKundliOverview,
   getKundliDasha,

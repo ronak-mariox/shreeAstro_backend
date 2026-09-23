@@ -85,11 +85,42 @@ async function expectError(fn) {
   const missing = await expectError(() => kundliReadService.getSeekerKundliForChat({ chatId: new mongoose.Types.ObjectId(), accountId: astro._id }));
   check('an unknown chat is 404', missing?.status === 404);
 
-  section('never someone else\'s chart');
+  section('how closely the chart matches what was asked is said out loud');
+  check('an exact match on the intake says so', kundli.match === 'intake', kundli.match);
+  check('and does not repeat the intake details back', kundli.intakeBirthDetails === undefined);
+
+  /** The same birth date, a different time — the seeker typed the intake again from a default. */
+  const timeDiffers = await chatWith({ fullName: 'Arjun Sharma', dateOfBirth: new Date('1995-08-15T00:00:00.000Z'), timeOfBirth: '09:45', place: { formatted: 'Mumbai' } });
+  const dateOnly = await kundliReadService.getSeekerKundliForChat({ chatId: timeDiffers._id, accountId: astro._id, origin: 'http://localhost' });
+  check('same date, different time → the chart is still shown', dateOnly.found === true && dateOnly.profileId === String(self._id));
+  check('...flagged as a date-only match', dateOnly.match === 'date', dateOnly.match);
+  check('...with the intake\'s own details alongside, so the difference is visible', dateOnly.intakeBirthDetails?.timeOfBirth === '09:45');
+
+  /**
+   * Nothing on the intake matches any saved chart — the real case this was
+   * getting wrong: the seeker's kundli is for 13/05/2004 and their intake for
+   * this consultation says 01/01/2000, so the astrologer was shown nothing at
+   * all with a fully generated kundli sitting in the database. Every candidate
+   * is the seeker's own profile, so their own chart is shown and labelled as
+   * exactly that.
+   */
   const other = await chatWith({ fullName: 'Priya', dateOfBirth: new Date('2000-01-01T00:00:00.000Z'), timeOfBirth: '10:00', place: { formatted: 'Delhi' } });
-  const none = await kundliReadService.getSeekerKundliForChat({ chatId: other._id, accountId: astro._id });
-  check('intake for a person with no saved kundli → found: false (not the seeker\'s own chart)', none.found === false);
-  check('...with the intake details, for the form', none.birthDetails.fullName === 'Priya' && none.birthDetails.place === 'Delhi');
+  const mismatched = await kundliReadService.getSeekerKundliForChat({ chatId: other._id, accountId: astro._id, origin: 'http://localhost' });
+  check('nothing matches the intake → the seeker\'s own chart, not an empty sheet', mismatched.found === true && mismatched.profileId === String(self._id));
+  check('...labelled as the seeker\'s own rather than an answer to the intake', mismatched.match === 'seeker', mismatched.match);
+  check('...with what the intake actually asked about', mismatched.intakeBirthDetails?.fullName === 'Priya' && mismatched.intakeBirthDetails?.place === 'Delhi');
+
+  section('with nothing saved at all, there is nothing to show');
+  const strangerSeeker = await User.create({ name: 'No Kundli', email: 'nk@x.com', phone: { number: '9876500004' } });
+  const bare = await ChatSession.create({
+    type: 'consultation', channel: 'chat', user: strangerSeeker._id, astrologer: astro._id, status: 'active', startedAt: new Date(),
+    intake: { birthDetails: { fullName: 'No Kundli', dateOfBirth: new Date('1990-03-03T00:00:00.000Z'), timeOfBirth: '07:00', place: { formatted: 'Pune' } }, topic: 'career-job' },
+    billing: { ratePerMinute: 20, commissionPercent: 25 },
+  });
+  const none = await kundliReadService.getSeekerKundliForChat({ chatId: bare._id, accountId: astro._id, origin: 'http://localhost' });
+  check('found: false', none.found === false);
+  check('...with the intake details, for the form', none.birthDetails.fullName === 'No Kundli' && none.birthDetails.place === 'Pune');
+
   const noDob = await chatWith({ fullName: 'Arjun Sharma' });
   const fallback = await kundliReadService.getSeekerKundliForChat({ chatId: noDob._id, accountId: astro._id, origin: 'http://localhost' });
   check('no birth date on the intake → their own ("self") kundli', fallback.found === true && fallback.profileId === String(self._id));

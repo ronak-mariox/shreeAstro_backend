@@ -26,7 +26,17 @@ const searchPlaces = asyncHandler(async (req, res) => {
 
 /** POST /birth-profiles — creates the profile and generates its kundli (the 12-call batch) in one request. */
 const createBirthProfile = asyncHandler(async (req, res) => {
-  const result = await kundliService.createBirthProfile(req.account.accountId, req.body, originOf(req));
+  /**
+   * `asSeeker`: this endpoint is the account's owner generating their own chart,
+   * so two things follow that must not follow from anyone else's request — the
+   * birth details it was cast from become what their account holds, and their
+   * older charts for details they no longer claim are deleted. The astrologer's
+   * in-consultation generation does not pass it, so nothing they type can
+   * rewrite the seeker's account or throw away their charts.
+   */
+  const result = await kundliService.createBirthProfile(req.account.accountId, req.body, originOf(req), {
+    asSeeker: true,
+  });
   return res.status(201).json(result);
 });
 

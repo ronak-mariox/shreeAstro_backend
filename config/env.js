@@ -218,6 +218,18 @@ const env = {
      */
     astrologerReconnectGraceSeconds: Number(process.env.ASTROLOGER_RECONNECT_GRACE_SECONDS || 60),
     /**
+     * How long an active consultation waits after the SEEKER's app disappears
+     * before it is ended (reason 'user_disconnected').
+     *
+     * Not a pause — the session ends, billed only up to the moment they went.
+     * The wait exists because a dropped socket does not distinguish "closed the
+     * app" from "walked through a tunnel" or "backgrounded it for a second",
+     * and ending a paid consultation over a blink would be far worse than
+     * waiting a moment to be sure. Shorter ends a genuinely abandoned session
+     * sooner; longer survives a worse connection.
+     */
+    userReconnectGraceSeconds: Number(process.env.USER_RECONNECT_GRACE_SECONDS || 45),
+    /**
      * The only rounding rule billing ever applies: any part of a minute
      * already bills as the whole minute (see utils/billing.js's
      * `minutesFor`) — always "up" today. Kept as one named constant, not
