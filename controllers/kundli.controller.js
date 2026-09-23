@@ -31,6 +31,11 @@ const createBirthProfile = asyncHandler(async (req, res) => {
 });
 
 /** GET /kundli/:profileId — chart, key positions, planetary table. */
+/** GET /kundli/me — the kundli for the seeker's current birth details, if one has been generated. */
+const getCurrentKundli = asyncHandler(async (req, res) => {
+  return res.json(await kundliReadService.getCurrentKundli(req.account.accountId));
+});
+
 const getKundli = asyncHandler(async (req, res) => {
   const result = await kundliReadService.getKundliOverview(req.params.profileId, req.account.accountId, originOf(req));
   return res.json(result);
@@ -69,6 +74,7 @@ const getRemedies = asyncHandler(async (req, res) => {
 module.exports = {
   searchPlaces,
   createBirthProfile,
+  getCurrentKundli,
   getKundli,
   getDasha,
   getAntardasha,

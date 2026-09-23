@@ -212,6 +212,13 @@ const env = {
      * change it.
      */
     partialMinuteRounding: process.env.PARTIAL_MINUTE_ROUNDING || 'up',
+    /**
+     * How long a consultation is assumed to last when working out the
+     * "busy for about N min" estimate a seeker sees on a busy astrologer
+     * (services/astrologer.service.js's estimatedWaitSecondsFor) — used
+     * only until that astrologer has consultations of their own to average.
+     */
+    estimatedConsultationMinutes: Number(process.env.ESTIMATED_CONSULTATION_MINUTES || 10),
     /** Package sessions (config/packages.js): how many seconds before a package runs out the seeker is warned. */
     packageWarningSeconds: Number(process.env.PACKAGE_WARNING_SECONDS || 30),
   },

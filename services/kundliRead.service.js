@@ -7,6 +7,7 @@
  */
 
 const BirthProfile = require('../models/BirthProfile');
+const UserProfile = require('../models/UserProfile');
 const { ChatSession } = require('../models/Chat');
 const ApiError = require('../utils/ApiError');
 const { getKundliSection } = require('./kundliCache.service');
@@ -162,6 +163,55 @@ async function getKundliRemedies(profileId, userId) {
   return { profileId, remedies: normalizeRemedies(gemRaw, pujaRaw) };
 }
 
+/**
+ * GET /kundli/me — is there already a generated kundli for the seeker's
+ * CURRENT birth details?
+ *
+ * The Kundli tab asks this instead of trusting an id it remembered: the
+ * moment any of the date, time or place of birth changes, no stored chart
+ * matches any more, so the app offers to generate — which casts a new chart
+ * (a new birth means a new cache key) and stores it. Details left alone
+ * match the same chart forever, and every later open is a database read,
+ * with nothing fetched or paid for again.
+ *
+ * Deliberately server-side: it is the same answer on every device the seeker
+ * signs in on, and the profile's own place text and a generated chart's are
+ * both the label the place search returned, so they compare exactly.
+ */
+async function getCurrentKundli(userId) {
+  const profile = await UserProfile.findOne({ user: userId }).select('birthDetails').lean();
+  const details = profile?.birthDetails;
+
+  if (!details?.dateOfBirth || !details?.timeOfBirth || !details?.place?.formatted) {
+    /** Nothing to match against yet — the app asks for birth details first. */
+    return { found: false, reason: 'birth_details_missing' };
+  }
+
+  const fingerprint = birthFingerprint(details);
+  const candidates = await BirthProfile.find({ user: userId }).sort({ createdAt: -1 }).lean();
+  const match = candidates.find(candidate => birthFingerprint(candidate.birthDetails) === fingerprint);
+
+  if (!match) {
+    /** Their details changed (or they never generated one): a fresh chart is needed. */
+    return { found: false, reason: 'not_generated' };
+  }
+  return { found: true, profileId: String(match._id), status: match.status };
+}
+
+/**
+ * What makes two births the same chart, for the purpose above: the day, the
+ * minute, and the place as the place search labelled it. (The cache's own key
+ * is `birthHash` — computed from the geocoded coordinates — but the seeker's
+ * profile keeps only the place's text, so this is what can be compared.)
+ */
+function birthFingerprint(details) {
+  return [
+    dayOf(details?.dateOfBirth) || '',
+    details?.timeOfBirth || '',
+    (details?.place?.formatted || '').trim().toLowerCase(),
+  ].join('|');
+}
+
 /** A Date (or ISO string) -> "YYYY-MM-DD" in UTC, the way birth dates are stored (UTC midnight). */
 const dayOf = value => {
   if (!value) return null;
@@ -248,6 +298,8 @@ async function getSeekerKundliForChat({ chatId, accountId, origin }) {
 }
 
 module.exports = {
+  getCurrentKundli,
+  birthFingerprint,
   getSeekerKundliForChat,
   loadOwnedBirthProfile,
   getKundliOverview,

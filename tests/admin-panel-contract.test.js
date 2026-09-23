@@ -356,11 +356,35 @@ const DELETE = (p) => call('DELETE', p);
     'admin.id', 'admin.email', 'admin.role', 'temporaryPassword',
   ]);
 
+  /* ------------------------------------------------------- DisputesPage */
+  section('DisputesPage');
   const tickets = await GET('/admin/support-tickets');
-  hasFields('the support ticket row', tickets.body.items[0], [
+  hasFields('the dispute row', tickets.body.items[0], [
     '_id', 'reference', 'ownerRole', 'ownerName', 'issueType', 'description',
     'status', 'createdAt',
   ]);
+  const raisedByAstrologer = tickets.body.items.find((row) => row.ownerRole === 'astrologer');
+  check('a dispute raised from astro_app is in the queue, with who raised it',
+    Boolean(raisedByAstrologer?.ownerName) && raisedByAstrologer.status === 'open', raisedByAstrologer);
+
+  /** The page's own two filters. */
+  const byRole = await GET('/admin/support-tickets?ownerRole=astrologer');
+  check('filters by who raised it', byRole.body.items.every((row) => row.ownerRole === 'astrologer') && byRole.body.items.length > 0);
+  const bySeeker = await GET('/admin/support-tickets?ownerRole=user');
+  check('...and excludes the others', bySeeker.body.items.every((row) => row.ownerRole === 'user'));
+  const open = await GET('/admin/support-tickets?status=open');
+  check('filters by status', open.body.items.every((row) => row.status === 'open') && open.body.items.length > 0);
+
+  /** Answering it: the status and the reply the astrologer reads back in their app. */
+  const answered = await PATCH(`/admin/support-tickets/${raisedByAstrologer._id}`, {
+    status: 'resolved',
+    resolution: 'Reviewed the transcript — the seeker has been refunded.',
+  });
+  check('an admin can answer a dispute', answered.status === 200
+    && answered.body.ticket?.status === 'resolved'
+    && /refunded/.test(answered.body.ticket?.resolution || ''), answered.body);
+  const afterAnswer = await GET('/admin/support-tickets?status=resolved');
+  check('and it moves to the resolved view', afterAnswer.body.items.some((row) => row._id === raisedByAstrologer._id));
 
   /** The "Other" third parties — a plain reference record, not a live integration. */
   const thirdParty = await POST('/admin/third-parties', {
