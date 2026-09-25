@@ -1,9 +1,10 @@
 /**
  * /api/v1 — the few things that are not about one account.
  *
- * `/settings` and `/horoscope` are open: the apps read them on the very first
- * launch, before anyone has signed in. `/support` needs a token, because a
- * ticket belongs to whoever raised it.
+ * `/settings`, `/horoscope` and `/panchang` are open: the apps read them on
+ * the very first launch, before anyone has signed in, and the website's
+ * Panchang page is public. `/support` needs a token, because a ticket
+ * belongs to whoever raised it.
  */
 
 const express = require('express');
@@ -11,6 +12,8 @@ const express = require('express');
 const userController = require('../controllers/user.controller');
 const horoscopeController = require('../controllers/horoscope.controller');
 const horoscopeValidator = require('../validators/horoscope.validator');
+const panchangController = require('../controllers/panchang.controller');
+const panchangValidator = require('../validators/panchang.validator');
 const { authenticate, authorize } = require('../middlewares/auth.middleware');
 
 const router = express.Router();
@@ -23,6 +26,12 @@ router.get('/horoscope', userController.horoscope);
 
 /** `?sign=leo&day=next|previous` — real AstrologyAPI reading, cached at most 12x/day across the whole app. */
 router.get('/horoscope/daily', horoscopeValidator.dailyHoroscope, horoscopeController.getDaily);
+
+/** `?sign=leo` — real AstrologyAPI sun-sign compatibility against the other eleven signs, fetched once per pair ever. */
+router.get('/horoscope/compatibility', horoscopeValidator.compatibility, horoscopeController.getCompatibility);
+
+/** `?date=YYYY-MM-DD` (default today, IST) — real AstrologyAPI panchang for the configured place, fetched at most once per date across the whole site. */
+router.get('/panchang', panchangValidator.getPanchang, panchangController.getPanchang);
 
 /** Support tickets and disputes — both apps file them the same way. */
 router.post('/support/tickets', authenticate, authorize('user', 'astrologer'), userController.createTicket);

@@ -38,6 +38,14 @@ const withdrawalSchema = new Schema(
     },
 
     status: { type: String, enum: STATUSES, default: 'pending', index: true },
+    /**
+     * When the money leaves `earnings.balance`. Requests are now settled only
+     * on approval ('on_approval'): the balance is untouched while the admin
+     * decides, and the amount is merely reserved in `earnings.pendingWithdrawal`.
+     * Older rows (no value stored) were deducted at request time and are
+     * refunded on rejection — the default keeps them on that path.
+     */
+    deduction: { type: String, enum: ['on_request', 'on_approval'], default: 'on_request' },
     requestedAt: { type: Date, default: Date.now },
     reviewedAt: { type: Date },
     reviewedBy: { type: Schema.Types.ObjectId, ref: 'Admin' },

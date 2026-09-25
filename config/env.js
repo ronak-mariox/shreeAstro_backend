@@ -136,6 +136,30 @@ const env = {
      * that shouldn't spend its own horoscope budget in the background.
      */
     horoscopePrefetchEnabled: process.env.HOROSCOPE_PREFETCH_ENABLED !== 'false',
+    /**
+     * The website's Panchang page's own separate ceiling (`category:
+     * 'panchang'` in the credit guard) — two provider calls per cache miss,
+     * at most one miss per (date, location) per day thanks to
+     * models/PanchangCache.js's TTL, so ~62 calls a month for one location.
+     * Its own pool for the same reason as the horoscope one above: a bug or
+     * a burst here must never eat kundli generation's credits.
+     */
+    panchangMonthlyCreditLimit: Number(process.env.PANCHANG_API_MONTHLY_LIMIT || 100),
+  },
+
+  /**
+   * Where GET /panchang is computed FOR. The page shows one city's panchang
+   * for everyone (sunrise, rahu kaal and the tithi boundaries all shift with
+   * the location), so the location is a deployment setting, not a request
+   * parameter — one cache row per day, not one per visitor's city. Defaults
+   * to New Delhi; tzone is IST (see utils/istDate.js — every time the page
+   * shows is IST wall-clock).
+   */
+  panchang: {
+    latitude: Number(process.env.PANCHANG_LAT || 28.6139),
+    longitude: Number(process.env.PANCHANG_LON || 77.209),
+    tzone: Number(process.env.PANCHANG_TZONE || 5.5),
+    placeLabel: process.env.PANCHANG_PLACE_LABEL || 'New Delhi, India',
   },
 
   /**

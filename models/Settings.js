@@ -72,6 +72,50 @@ const settingsSchema = new Schema(
       minimumSupported: { type: String, default: '1.0.0' },
     },
 
+    /**
+     * Loyalty points — how many a rupee earns, where the tiers begin, and
+     * whether a tier's cashback is actually paid out (services/loyalty.service.js).
+     */
+    loyalty: {
+      enabled: { type: Boolean, default: true },
+      /** Points per ₹100 spent, by what it was spent on. */
+      pointsPer100: {
+        chat: { type: Number, default: 10, min: 0 },
+        call: { type: Number, default: 12, min: 0 },
+        order: { type: Number, default: 8, min: 0 },
+        puja: { type: Number, default: 8, min: 0 },
+      },
+      referralBonusPoints: { type: Number, default: 100, min: 0 },
+      signupBonusPoints: { type: Number, default: 50, min: 0 },
+      tiers: {
+        type: [
+          new Schema(
+            {
+              key: { type: String, enum: ['silver', 'gold', 'platinum', 'diamond'], required: true },
+              minPoints: { type: Number, required: true, min: 0 },
+              cashbackPercent: { type: Number, default: 0, min: 0, max: 100 },
+            },
+            { _id: false },
+          ),
+        ],
+        default: () => [
+          { key: 'silver', minPoints: 0, cashbackPercent: 0 },
+          { key: 'gold', minPoints: 500, cashbackPercent: 2 },
+          { key: 'platinum', minPoints: 2000, cashbackPercent: 3 },
+          { key: 'diamond', minPoints: 5000, cashbackPercent: 5 },
+        ],
+      },
+      /** When on, a tier's cashbackPercent of each consultation charge is credited as type 'cashback'. */
+      cashbackEnabled: { type: Boolean, default: false },
+    },
+
+    /** Refer-a-friend: what both sides get, and what the friend must first spend. */
+    referral: {
+      enabled: { type: Boolean, default: true },
+      rewardAmount: { type: Number, default: 200, min: 0 },
+      minFirstSpend: { type: Number, default: 100, min: 0 },
+    },
+
     supportEmail: { type: String, trim: true, default: 'support@shreeastro.com' },
     supportPhone: { type: String, trim: true },
 

@@ -172,6 +172,30 @@ async function announce(chatId, text, event) {
   emit(roomFor(chatId), CHAT_EVENTS.NEW, message.toSocketPayload());
 }
 
+/** The astrologer's automatic opening line; `{name}` is the seeker's first name (with a leading space) or nothing. */
+const ASTROLOGER_GREETING = 'Namaste{name}! Welcome. I have gone through your details — how can I help you today?';
+
+/**
+ * Posts the astrologer's opening greeting into a just-started chat and pushes
+ * it to the room. Never fatal: a failed greeting must not undo an accept.
+ */
+async function greetSeeker(chat, astrologerId) {
+  try {
+    const user = await User.findById(chat.user).select('name').lean();
+    const firstName = String(user?.name || '').trim().split(/\s+/)[0];
+    const message = await Message.send({
+      chatId: chat._id,
+      senderId: astrologerId,
+      senderRole: 'astrologer',
+      type: 'text',
+      content: { text: ASTROLOGER_GREETING.replace('{name}', firstName ? ` ${firstName}` : '') },
+    });
+    emit(roomFor(chat._id), CHAT_EVENTS.NEW, message.toSocketPayload());
+  } catch (error) {
+    console.error('[chat] greeting failed for', String(chat._id), error.message);
+  }
+}
+
 /* -------------------------------------------------------------------------- */
 /* Starting a consultation                                                    */
 /* -------------------------------------------------------------------------- */
@@ -491,6 +515,15 @@ async function acceptChat({ chatId, astrologerId }) {
     packageEndsAt: chat.packageState?.endsAt,
   });
   emit(`user:${chat.user}`, 'chat:accepted', { chatId: String(chat._id) });
+
+  /**
+   * The astrologer opens the conversation — the first thing the seeker reads
+   * after "Consultation started" is a greeting from the person they paid to
+   * talk to, not silence. A real astrologer-authored message (it stays in the
+   * transcript on both sides), sent in the astrologer's name automatically so
+   * the seeker is never left waiting on a first line.
+   */
+  await greetSeeker(chat, astrologerId);
 
   await notificationService.notify({
     ownerRole: 'user',
@@ -1666,6 +1699,15 @@ async function endChat({ chatId, accountId, endedBy, reason, effectiveEndAt }) {
   );
 
   await Message.system(chat._id, 'Consultation ended.', 'ended');
+
+  /**
+   * Billing is settled and saved: this is the one place a consultation
+   * counts as spent. Loyalty points, a tier's cashback and the referral
+   * reward all hang off it (services/growthHooks.service.js) — each
+   * idempotent, none able to fail the end itself. Required lazily so the
+   * growth services never sit in this module's require graph at boot.
+   */
+  await require('./growthHooks.service').onConsultationEnded(chat);
 
   emit(roomFor(chat._id), CHAT_EVENTS.ENDED, {
     chatId: String(chat._id),

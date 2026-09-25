@@ -12,7 +12,7 @@
 const express = require('express');
 
 const astrologerController = require('../controllers/astrologer.controller');
-const { authenticate, authorize } = require('../middlewares/auth.middleware');
+const { authenticate, authorize, optionalAuthenticate } = require('../middlewares/auth.middleware');
 const {
   uploadProfilePhoto,
   uploadGalleryImage,
@@ -23,7 +23,7 @@ const {
 
 const directoryRouter = express.Router();
 
-directoryRouter.use(authenticate);
+directoryRouter.use(optionalAuthenticate);
 
 directoryRouter.get('/', astrologerController.list);
 directoryRouter.get('/:astrologerId', astrologerController.detail);

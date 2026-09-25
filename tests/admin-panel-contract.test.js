@@ -414,7 +414,7 @@ const DELETE = (p) => call('DELETE', p);
   check('every change made above was logged', logs.body.items.length >= 6, logs.body.total);
   check('the areas match the page filters',
     logs.body.items.every((row) =>
-      ['Users', 'Astrologers', 'Consultations', 'Payments', 'Wallets', 'Content', 'Settings', 'Third parties']
+      ['Users', 'Astrologers', 'Consultations', 'Payments', 'Wallets', 'Content', 'Settings', 'Third parties', 'Shop', 'Pujas', 'Offers', 'Reviews', 'Careers']
         .includes(row.area)),
     [...new Set(logs.body.items.map((r) => r.area))]);
 

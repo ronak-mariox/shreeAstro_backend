@@ -24,4 +24,14 @@ const dailyHoroscope = [
   validate,
 ];
 
-module.exports = { dailyHoroscope };
+/** GET /horoscope/compatibility?sign=leo */
+const compatibility = [
+  query('sign')
+    .trim()
+    .toLowerCase()
+    .isIn(ZODIAC_SIGNS)
+    .withMessage('Unknown zodiac sign.'),
+  validate,
+];
+
+module.exports = { dailyHoroscope, compatibility };

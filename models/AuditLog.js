@@ -20,6 +20,11 @@ const AREAS = [
   'Content',
   'Settings',
   'Third parties',
+  'Shop',
+  'Pujas',
+  'Offers',
+  'Reviews',
+  'Careers',
 ];
 
 const auditLogSchema = new Schema(

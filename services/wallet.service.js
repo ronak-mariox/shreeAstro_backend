@@ -50,6 +50,8 @@ async function post({
   title,
   description,
   chatSession,
+  order,
+  pujaBooking,
   payment,
   createdByAdmin,
   status = 'success',
@@ -130,6 +132,8 @@ async function post({
         title,
         description,
         chatSession,
+        order,
+        pujaBooking,
         payment,
         createdByAdmin,
       },
@@ -207,7 +211,10 @@ async function getAstrologerEarnings(astrologerId) {
     sumCreditsSince(astrologerId, startOfMonth),
   ]);
 
-  return { ...astrologer.earnings.toObject(), today, thisMonth };
+  const earnings = astrologer.earnings.toObject();
+  /** What can still be requested: the balance less what is already reserved by pending withdrawal requests. */
+  const available = Math.max(0, (earnings.balance || 0) - (earnings.pendingWithdrawal || 0));
+  return { ...earnings, available, today, thisMonth };
 }
 
 /**
@@ -266,7 +273,7 @@ function assertTopUpsAllowed() {
  * `pending` and hands back an order the app can "pay". When Razorpay (or
  * whichever) lands, create the gateway order here and return its id.
  */
-async function startTopUp({ userId, amount }) {
+async function startTopUp({ userId, amount, couponCode }) {
   assertTopUpsAllowed();
 
   const rupees = Math.round(Number(amount));
@@ -283,6 +290,24 @@ async function startTopUp({ userId, amount }) {
     });
   }
 
+  /**
+   * A coupon on a top-up is a bonus, not a discount: the seeker pays the full
+   * amount and the coupon's worth is credited on top once the payment is
+   * confirmed. Checked here so a bad code is refused before anything is
+   * opened; redeemed in confirmTopUp, when the money actually lands.
+   */
+  let bonus = null;
+  if (couponCode) {
+    const couponService = require('./coupon.service');
+    const { coupon, discount } = await couponService.validate({
+      code: couponCode,
+      context: 'topup',
+      amount: rupees,
+      userId,
+    });
+    bonus = { code: coupon.code, coupon: coupon._id, bonusAmount: discount };
+  }
+
   const transaction = await post({
     ownerRole: 'user',
     ownerId: userId,
@@ -293,15 +318,74 @@ async function startTopUp({ userId, amount }) {
     title: 'Money added to wallet',
     payment: { gateway: 'none', orderId: `ORD-${Date.now()}` },
   });
+  if (bonus) {
+    transaction.coupon = bonus;
+    await transaction.save();
+  }
 
   return {
     transactionId: String(transaction._id),
     reference: transaction.reference,
     orderId: transaction.payment.orderId,
     amount: rupees,
+    couponCode: bonus ? bonus.code : null,
+    bonusAmount: bonus ? bonus.bonusAmount : 0,
     /** No gateway yet — the app calls confirmTopUp straight away. */
     gateway: 'none',
   };
+}
+
+/**
+ * The coupon bonus promised at startTopUp, paid now that the top-up is real.
+ *
+ * Re-validated here (the coupon may have been paused, or the seeker may have
+ * used it on another top-up in between) and redeemed against this
+ * transaction; the redemption's unique index means a confirm that somehow
+ * runs twice pays once. A refused coupon silently pays no bonus — the
+ * top-up itself already succeeded and must stay that way.
+ */
+async function creditTopUpBonus(transaction) {
+  const promised = transaction.coupon;
+  if (!promised?.coupon || !promised.bonusAmount || promised.bonusTransaction) {
+    return null;
+  }
+  const couponService = require('./coupon.service');
+  try {
+    const { coupon, discount } = await couponService.validate({
+      code: promised.code,
+      context: 'topup',
+      amount: transaction.amount,
+      userId: transaction.owner,
+    });
+    await couponService.redeem({
+      coupon,
+      userId: transaction.owner,
+      context: 'topup',
+      reference: transaction._id,
+      amountBefore: transaction.amount,
+      discount,
+    });
+    const bonus = await post({
+      ownerRole: 'user',
+      ownerId: transaction.owner,
+      direction: 'credit',
+      type: 'bonus',
+      amount: discount,
+      title: `Coupon ${coupon.code} bonus`,
+      description: `Bonus on a ₹${transaction.amount} top-up`,
+    });
+    transaction.coupon.bonusAmount = discount;
+    transaction.coupon.bonusTransaction = bonus._id;
+    await transaction.save();
+    return bonus;
+  } catch (error) {
+    if (error instanceof ApiError && error.code === 'coupon_invalid') {
+      transaction.coupon.bonusAmount = 0;
+      await transaction.save();
+      return null;
+    }
+    throw error;
+  }
 }
 
 /**
@@ -353,6 +437,8 @@ async function confirmTopUp({ userId, transactionId, paymentId, method }) {
   }
   await transaction.save();
 
+  await creditTopUpBonus(transaction);
+
   return transaction;
 }
 
@@ -363,9 +449,12 @@ async function confirmTopUp({ userId, transactionId, paymentId, method }) {
 /**
  * An astrologer asks to be paid out.
  *
- * The amount leaves the withdrawable balance straight away and sits in
- * `pendingWithdrawal` until an admin decides. That way the same money cannot be
- * requested twice while the first request is still waiting.
+ * Nothing leaves `earnings.balance` here: the amount is only reserved in
+ * `earnings.pendingWithdrawal` until an admin approves (the balance is
+ * deducted then — see admin.service.js's reviewWithdrawal) or rejects (the
+ * reservation is simply released). The reservation still stops the same
+ * money being requested twice: a request must fit inside
+ * `balance − pendingWithdrawal`.
  */
 async function requestWithdrawal({ astrologerId, amount, bankAccountId }) {
   const rupees = Math.round(Number(amount));
@@ -391,14 +480,21 @@ async function requestWithdrawal({ astrologerId, amount, bankAccountId }) {
   }
 
   /**
-   * The balance check is in the filter, so two requests sent at the same moment
-   * cannot both pass — the second one finds the balance already reduced.
+   * The availability check is in the filter, so two requests sent at the same
+   * moment cannot both pass — the second one finds the reservation already
+   * grown. `balance` itself is not touched.
    */
   const astrologer = await Astrologer.findOneAndUpdate(
-    { _id: astrologerId, 'earnings.balance': { $gte: rupees } },
     {
-      $inc: { 'earnings.balance': -rupees, 'earnings.pendingWithdrawal': rupees },
+      _id: astrologerId,
+      $expr: {
+        $gte: [
+          { $subtract: ['$earnings.balance', { $ifNull: ['$earnings.pendingWithdrawal', 0] }] },
+          rupees,
+        ],
+      },
     },
+    { $inc: { 'earnings.pendingWithdrawal': rupees } },
     { returnDocument: 'after' },
   );
 
@@ -409,6 +505,7 @@ async function requestWithdrawal({ astrologerId, amount, bankAccountId }) {
   const withdrawal = await Withdrawal.create({
     astrologer: astrologerId,
     amount: rupees,
+    deduction: 'on_approval',
     bankAccount: {
       holderName: account.holderName,
       bankName: account.bankName,
@@ -422,7 +519,16 @@ async function requestWithdrawal({ astrologerId, amount, bankAccountId }) {
     type: 'withdrawal',
     title: 'Withdrawal requested',
     body: `${astrologer.name} requested a withdrawal of ₹${rupees}.`,
-    action: { screen: 'astrologer', id: String(astrologerId) },
+    /** The panel reviews payouts on Wallets → Payout requests. */
+    action: { screen: 'wallets', id: String(astrologerId) },
+  });
+
+  await notificationService.notify({
+    ownerRole: 'astrologer',
+    ownerId: astrologerId,
+    type: 'withdrawal',
+    title: 'Withdrawal request received',
+    body: `Your request for ₹${rupees} is awaiting approval — please allow up to 24 hours. Your balance is deducted only once it is approved.`,
   });
 
   return withdrawal;

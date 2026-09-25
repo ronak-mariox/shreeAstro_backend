@@ -17,13 +17,14 @@ const apiUsageSchema = new Schema({
   birthHash: { type: String, trim: true },
   /**
    * Which monthly budget this call counts against (see the credit guard in
-   * services/kundliCache.service.js) — 'horoscope' draws from its own
-   * separate ceiling so a month of daily-horoscope prefetching can never
-   * starve kundli generation of credits. Rows written before this field
-   * existed have none at all, not 'general' — the guard's own query accounts
-   * for that (`category: { $ne: 'horoscope' }` for the general count).
+   * services/kundliCache.service.js) — 'horoscope' and 'panchang' each draw
+   * from their own separate ceiling so a month of daily-horoscope
+   * prefetching, or the website's daily panchang, can never starve kundli
+   * generation of credits. Rows written before this field existed have none
+   * at all, not 'general' — the guard's own query accounts for that
+   * (`category: { $nin: [...the dedicated pools] }` for the general count).
    */
-  category: { type: String, enum: ['general', 'horoscope'], default: 'general' },
+  category: { type: String, enum: ['general', 'horoscope', 'panchang'], default: 'general' },
   calledAt: { type: Date, default: Date.now },
 });
 

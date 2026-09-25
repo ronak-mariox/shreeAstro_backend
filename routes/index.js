@@ -14,8 +14,13 @@
  *   /admin          admin_panel everything else
  *   /settings       all         limits, feature switches, app versions
  *   /horoscope      user_app    today's reading and the planet positions
+ *   /panchang       website     today's panchang (AstrologyAPI-backed, cached daily)
  *   /support        both apps   tickets and disputes
  *   /places, /kundli, /birth-profiles   user_app   kundli generation (AstrologyAPI-backed)
+ *   /products, /orders, /pujas, /puja-bookings   website + user_app   the store and pujas
+ *   /articles       website + user_app   published articles
+ *   /offers, /coupons, /loyalty, /referral   website + user_app   discounts, points, refer-a-friend
+ *   /reviews, /testimonials, /careers        website              site-wide reviews and hiring
  *   /internal       a scheduler  jobs driven over HTTP where the process holds no timers
  */
 
@@ -31,6 +36,9 @@ const adminRoutes = require('./admin.routes');
 const publicRoutes = require('./public.routes');
 const kundliRoutes = require('./kundli.routes');
 const internalRoutes = require('./internal.routes');
+const commerceRoutes = require('./commerce.routes');
+const articleRoutes = require('./article.routes');
+const growthRoutes = require('./growth.routes');
 
 const router = express.Router();
 
@@ -44,8 +52,15 @@ router.use('/notifications', notificationRoutes);
 router.use('/admin', adminRoutes);
 router.use('/internal', internalRoutes);
 
-/** Settings, horoscope and support — not tied to one kind of account. */
+/** Settings, horoscope, panchang and support — not tied to one kind of account. */
 router.use('/', publicRoutes);
 router.use('/', kundliRoutes);
+
+/** The store, pujas and published articles — browsing is open, buying needs a seeker. */
+router.use('/', commerceRoutes);
+router.use('/', articleRoutes);
+
+/** Offers, points, referrals, reviews and careers — mostly open, the seeker's own parts signed in. */
+router.use('/', growthRoutes);
 
 module.exports = router;

@@ -8,6 +8,7 @@
 const { body, param, query } = require('express-validator');
 
 const { GENDERS } = require('../models/constants');
+const { DOMAIN_NAMES } = require('../config/kundliRules');
 const { validate } = require('../middlewares/validate.middleware');
 
 /** The nine classical grahas — what a mahadasha/antardasha lord can ever be. */
@@ -75,4 +76,11 @@ const antardashaParams = [
   validate,
 ];
 
-module.exports = { searchPlaces, createBirthProfile, profileIdParam, antardashaParams };
+/** GET /kundli/:profileId/analysis/:domain — one of the four life areas the rule engine reads (config/kundliRules.js DOMAIN_NAMES). */
+const analysisParams = [
+  param('profileId').isMongoId().withMessage('Unknown kundli.'),
+  param('domain').trim().isIn(DOMAIN_NAMES).withMessage('Unknown analysis area.'),
+  validate,
+];
+
+module.exports = { searchPlaces, createBirthProfile, profileIdParam, antardashaParams, analysisParams };

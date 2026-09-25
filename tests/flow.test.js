@@ -261,7 +261,7 @@ const PATCH = (p, o) => call('PATCH', p, o);
 
   const transcript = await GET(`/chats/${chatId}/messages`, { token: userToken });
   check('the transcript reads back oldest first', transcript.body.items[0].type === 'system', transcript.body.items?.[0]);
-  check('the transcript holds every turn', transcript.body.items.length === 4, { count: transcript.body.items.length });
+  check('the transcript holds every turn (intake, opener, the astrologer\'s greeting, both messages)', transcript.body.items.length === 5, { count: transcript.body.items.length });
 
   /* -------------------------------------------------------------- billing */
   section('billing — the meter, the wallet and the payout');
@@ -313,7 +313,9 @@ const PATCH = (p, o) => call('PATCH', p, o);
   check('a withdrawal is requested', wdl.status === 201, wdl.body);
 
   const afterRequest = await GET('/wallet', { token: astroToken });
-  check('the money leaves the balance while pending', afterRequest.body.earnings.balance === 0 && afterRequest.body.earnings.pendingWithdrawal === 150, afterRequest.body.earnings);
+  check('the balance is untouched while pending — the amount is only reserved', afterRequest.body.earnings.balance === 150 && afterRequest.body.earnings.pendingWithdrawal === 150 && afterRequest.body.earnings.available === 0, afterRequest.body.earnings);
+  const again = await POST('/wallet/withdrawals', { token: astroToken, body: { amount: 150 } });
+  check('the reserved amount cannot be requested a second time', again.status === 400, again.body);
 
   const adminWdl = await GET('/admin/withdrawals?status=pending', { token: adminToken });
   check('the request reaches the admin', adminWdl.body.items?.length === 1);
@@ -322,7 +324,7 @@ const PATCH = (p, o) => call('PATCH', p, o);
   check('the admin pays it out', paidOut.body.withdrawal?.status === 'paid', paidOut.body);
 
   const settled = await GET('/wallet', { token: astroToken });
-  check('pending clears once paid', settled.body.earnings.pendingWithdrawal === 0 && settled.body.earnings.totalWithdrawn === 150, settled.body.earnings);
+  check('paid on approval: the balance is deducted now, the reservation clears', settled.body.earnings.balance === 0 && settled.body.earnings.pendingWithdrawal === 0 && settled.body.earnings.totalWithdrawn === 150, settled.body.earnings);
 
   /* --------------------------------------------------- admin oversight */
   section('admin_panel — oversight');

@@ -41,6 +41,8 @@ const startTopUp = asyncHandler(async (req, res) => {
   const order = await walletService.startTopUp({
     userId: req.account.accountId,
     amount: req.body.amount,
+    /** Optional: a top-up coupon's worth is credited as a bonus once the payment confirms. */
+    couponCode: req.body.couponCode,
   });
   return res.status(201).json(order);
 });
@@ -65,6 +67,8 @@ const confirmTopUp = asyncHandler(async (req, res) => {
       balanceAfter: transaction.balanceAfter,
       status: transaction.status,
       method: transaction.payment?.method,
+      couponCode: transaction.coupon?.code ?? null,
+      bonusAmount: transaction.coupon?.bonusAmount || 0,
     },
   });
 });

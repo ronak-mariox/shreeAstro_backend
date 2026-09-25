@@ -139,6 +139,14 @@ function attachUploadedUrl(req, res, next) {
   next();
 }
 
+/** The same, for an article's cover image — a different name so a form that carries both never mixes them up. */
+function attachUploadedCoverUrl(req, res, next) {
+  if (req.file) {
+    req.uploadedCoverUrl = publicUrlFor(req.file, req);
+  }
+  next();
+}
+
 /** What Create Account and Edit Profile send their photo as. */
 const uploadProfilePhoto = [singleImage('photo', 'profiles'), attachUploadedUrl];
 
@@ -183,6 +191,109 @@ function attachUploadedFile(req, res, next) {
   next();
 }
 
+/**
+ * Several optional images on named fields in one form — a testimonial's
+ * `avatar` and `thumbnail`. Their URLs land on `req.uploadedUrls[field]`.
+ */
+const multipleImages = (fields, folder) =>
+  multer({
+    storage: storageFor(folder),
+    fileFilter: imageFilter,
+    limits: { fileSize: MAX_UPLOAD_MB * 1024 * 1024, files: fields.length },
+  }).fields(fields.map(name => ({ name, maxCount: 1 })));
+
+function attachUploadedUrls(req, res, next) {
+  req.uploadedUrls = {};
+  for (const [field, files] of Object.entries(req.files || {})) {
+    if (files && files[0]) {
+      req.uploadedUrls[field] = publicUrlFor(files[0], req);
+    }
+  }
+  next();
+}
+
+/** How many gallery files one product form may carry; the product itself caps the gallery at 8. */
+const PRODUCT_GALLERY_PER_REQUEST = 6;
+
+/**
+ * A product's cover (`image`, one) and gallery (`images`, up to six) in one
+ * form, all stored under `uploads/products`. Both optional.
+ */
+const productImages = () =>
+  multer({
+    storage: storageFor('products'),
+    fileFilter: imageFilter,
+    limits: { fileSize: MAX_UPLOAD_MB * 1024 * 1024, files: PRODUCT_GALLERY_PER_REQUEST + 1 },
+  }).fields([
+    { name: 'image', maxCount: 1 },
+    { name: 'images', maxCount: PRODUCT_GALLERY_PER_REQUEST },
+  ]);
+
+/**
+ * The cover lands on `req.uploadedPhotoUrl` — the same name a single-image
+ * form uses, so the controller reads it the same way — and the gallery on
+ * `req.uploadedImageUrls` (always an array, empty when none were sent).
+ * `req.uploadedFiles` keeps the raw files so a refused write can discard them.
+ */
+function attachUploadedProductImages(req, res, next) {
+  const cover = req.files?.image?.[0];
+  const gallery = req.files?.images || [];
+  if (cover) {
+    req.uploadedPhotoUrl = publicUrlFor(cover, req);
+  }
+  req.uploadedImageUrls = gallery.map(file => publicUrlFor(file, req));
+  req.uploadedFiles = [...(cover ? [cover] : []), ...gallery];
+  next();
+}
+
+/** How many photos a product review may carry. */
+const REVIEW_IMAGES_MAX = 3;
+
+/**
+ * A buyer's photos on a product review — `images`, up to three, stored under
+ * `uploads/reviews`. Optional; the review body itself is plain multipart text.
+ */
+const reviewImages = () =>
+  multer({
+    storage: storageFor('reviews'),
+    fileFilter: imageFilter,
+    limits: { fileSize: MAX_UPLOAD_MB * 1024 * 1024, files: REVIEW_IMAGES_MAX },
+  }).array('images', REVIEW_IMAGES_MAX);
+
+/** Their URLs land on `req.uploadedImageUrls` (always an array); `req.uploadedFiles` lets a refused review discard them. */
+function attachUploadedReviewImages(req, res, next) {
+  const files = req.files || [];
+  req.uploadedImageUrls = files.map(file => publicUrlFor(file, req));
+  req.uploadedFiles = files;
+  next();
+}
+
+/** A resume: a PDF or a Word document, alongside the image types a scan may be. */
+const RESUME_TYPES = [
+  ...DOCUMENT_TYPES,
+  'application/msword',
+  'application/vnd.openxmlformats-officedocument.wordprocessingml.document',
+];
+const RESUME_MAX_MB = 5;
+
+const resumeFilter = (req, file, done) => {
+  if (!RESUME_TYPES.includes(file.mimetype)) {
+    done(ApiError.badRequest('Upload a PDF or Word document.'));
+    return;
+  }
+  done(null, true);
+};
+
+/** What the careers page's application form sends its CV as — field `resume`, optional. */
+const uploadResume = [
+  multer({
+    storage: storageFor('resumes'),
+    fileFilter: resumeFilter,
+    limits: { fileSize: RESUME_MAX_MB * 1024 * 1024, files: 1 },
+  }).single('resume'),
+  attachUploadedFile,
+];
+
 /** What the Documents and Bank Details screens send their scan as. */
 const uploadDocument = [
   multer({
@@ -197,9 +308,19 @@ module.exports = {
   uploadProfilePhoto,
   uploadGalleryImage,
   uploadDocument,
+  uploadResume,
   singleImage,
+  multipleImages,
+  productImages,
+  reviewImages,
+  attachUploadedReviewImages,
+  REVIEW_IMAGES_MAX,
   attachUploadedUrl,
+  attachUploadedProductImages,
+  attachUploadedCoverUrl,
+  attachUploadedUrls,
   attachUploadedFile,
   IMAGE_TYPES,
   DOCUMENT_TYPES,
+  RESUME_TYPES,
 };

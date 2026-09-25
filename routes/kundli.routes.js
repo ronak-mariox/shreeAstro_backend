@@ -69,5 +69,13 @@ router.get(
   kundliValidator.profileIdParam,
   kundliController.getRemedies,
 );
+/** Rule-based life-area reading from the cached chart — never a provider call. */
+router.get(
+  '/kundli/:profileId/analysis/:domain',
+  authenticate,
+  authorize('user'),
+  kundliValidator.analysisParams,
+  kundliController.getAnalysis,
+);
 
 module.exports = router;
