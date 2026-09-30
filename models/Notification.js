@@ -26,6 +26,11 @@ const NOTIFICATION_TYPES = [
   'application',
   'promotion',
   'system',
+  'order',
+  'booking',
+  /** Loyalty points earned, and a referral that paid out. */
+  'reward',
+  'referral',
 ];
 
 const notificationSchema = new Schema(

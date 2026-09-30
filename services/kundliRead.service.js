@@ -59,9 +59,20 @@ async function getKundliOverview(profileId, userId, origin) {
   const planets = normalizePlanets(planetsRaw);
   const signOf = planet => planets.find(row => row.planet === planet)?.sign;
 
+  const details = birthProfile.birthDetails || {};
   return {
     profileId,
     status: birthProfile.status,
+    /** The birth this chart was cast for — the page prints these, never the account's (possibly newer) details. */
+    birth: {
+      fullName: details.fullName ?? null,
+      gender: details.gender ?? null,
+      dateOfBirth: details.dateOfBirth ?? null,
+      timeOfBirth: details.timeOfBirth ?? null,
+      place: details.place
+        ? { formatted: details.place.formatted ?? null, city: details.place.city ?? null, country: details.place.country ?? null }
+        : null,
+    },
     chart: { url: chartUrl },
     lagna: astro.lagna,
     nakshatra: astro.nakshatra,

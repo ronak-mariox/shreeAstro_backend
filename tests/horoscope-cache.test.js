@@ -182,7 +182,9 @@ function failingProvider(message = 'provider exploded') {
   const usageBeforeStaleFallback = await ApiUsage.countDocuments({});
   const staleServed = await getHoroscope('pisces', 'daily', today, failingProvider('astrologyapi is down'));
   check('today\'s fetch failed but yesterday\'s cached reading is served instead of an error', staleServed.payload.fromProvider === true);
-  check('the served reading really is the stale one, not a fresh one', JSON.stringify(staleServed) === JSON.stringify(stalePisces));
+  check('the served reading really is the stale one, not a fresh one', JSON.stringify(staleServed.payload) === JSON.stringify(stalePisces.payload) && JSON.stringify(staleServed.derived) === JSON.stringify(stalePisces.derived));
+  check('a stale fallback is labelled: stale=true and targetDate is the older reading\'s own date', staleServed.stale === true && staleServed.targetDate === yesterday);
+  check('a normal hit/miss is labelled stale=false with the requested date', stalePisces.stale === false && stalePisces.targetDate === yesterday);
   check('nothing new was billed for a stale-served fallback', await ApiUsage.countDocuments({}) === usageBeforeStaleFallback);
   check('today itself is still not cached — the fallback never pretends the fetch succeeded', await HoroscopeCache.countDocuments({ zodiacSign: 'pisces', targetDate: today }) === 0);
 

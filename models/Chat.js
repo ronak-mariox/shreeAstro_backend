@@ -282,6 +282,8 @@ const chatSessionSchema = new Schema(
       flagReason: { type: String, trim: true },
       /** Held at the top of the astrologer's public profile. */
       pinned: { type: Boolean, default: false },
+      /** Taken off the public reviews page by an admin (services/reviews.service.js). */
+      hidden: { type: Boolean, default: false },
     },
 
     /** Counter handed to each message; ordering key and reconnect cursor. */

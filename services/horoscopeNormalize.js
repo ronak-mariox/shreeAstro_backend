@@ -15,12 +15,20 @@
  * a one-line overall reading — the shape the frontend's DailyHoroscopeCard
  * already renders (see user_app/src/components/DailyHoroscopeCard.tsx).
  */
-function normalizeHoroscope(raw, derived, zodiacSign, targetDate) {
+/**
+ * @param {{ stale?: boolean, requestedDate?: string }} [meta] Set by the read
+ *   service when the cache served an older day's reading because today's fetch
+ *   failed: `date` is then the reading's real date, `requested_date` the day
+ *   the caller asked for, and `stale` is true so a UI can say so.
+ */
+function normalizeHoroscope(raw, derived, zodiacSign, targetDate, meta = {}) {
   const prediction = raw?.prediction ?? {};
 
   return {
     sign: zodiacSign,
     date: targetDate,
+    requested_date: meta.requestedDate ?? targetDate,
+    stale: Boolean(meta.stale),
     summary: prediction.luck ?? '',
     sections: {
       personal_life: prediction.personal_life ?? '',

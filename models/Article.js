@@ -8,6 +8,8 @@
 const mongoose = require('mongoose');
 const { Schema } = mongoose;
 
+const { applySlug } = require('../utils/slug');
+
 const STATUSES = ['draft', 'published', 'archived'];
 
 const articleSchema = new Schema(
@@ -23,6 +25,9 @@ const articleSchema = new Schema(
     excerpt: { type: String, trim: true, maxlength: 500 },
     body: { type: String, trim: true },
     coverImageUrl: { type: String, trim: true },
+    tags: [{ type: String, trim: true }],
+    /** Body words / 200, worked out on save — the "7 min read" the website prints. */
+    readMinutes: { type: Number, min: 0, default: 0 },
 
     status: { type: String, enum: STATUSES, default: 'draft', index: true },
     /** 'everyone' or 'users' — who may read it once published. */
@@ -39,15 +44,27 @@ const articleSchema = new Schema(
 
 articleSchema.index({ status: 1, publishedAt: -1 });
 
-/** Builds the slug from the title the first time, if none was given. */
-articleSchema.pre('validate', function setSlug() {
-  if (!this.slug && this.title) {
-    this.slug = this.title
-      .toLowerCase()
-      .replace(/[^a-z0-9]+/g, '-')
-      .replace(/^-|-$/g, '')
-      .slice(0, 80);
-  }
+/**
+ * Builds the slug from the title, rebuilds it when the title changes (unless a
+ * slug was sent explicitly) and dodges clashes with a numeric suffix.
+ */
+articleSchema.pre('validate', async function setSlug() {
+  await applySlug(this, 'title');
+});
+
+articleSchema.pre('validate', function setReadMinutes() {
+  const words = String(this.body || '').trim().split(/\s+/).filter(Boolean).length;
+  this.readMinutes = words ? Math.max(1, Math.round(words / 200)) : 0;
+});
+
+/** Admin and public payloads both address an article by `id`. */
+articleSchema.set('toJSON', {
+  virtuals: true,
+  versionKey: false,
+  transform(doc, ret) {
+    ret.id = String(ret._id);
+    return ret;
+  },
 });
 
 module.exports = mongoose.models.Article || mongoose.model('Article', articleSchema);

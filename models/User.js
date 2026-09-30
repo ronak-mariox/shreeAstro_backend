@@ -44,6 +44,22 @@ const statsSchema = new Schema(
   { _id: false },
 );
 
+const LOYALTY_TIERS = ['silver', 'gold', 'platinum', 'diamond'];
+
+/**
+ * Loyalty points. `points` is what can still be spent, `lifetimePoints` only
+ * ever grows and is what decides the tier. Only services/loyalty.service.js
+ * writes these — every change is a LoyaltyTransaction row first.
+ */
+const loyaltySchema = new Schema(
+  {
+    points: { type: Number, default: 0, min: 0 },
+    lifetimePoints: { type: Number, default: 0, min: 0 },
+    tier: { type: String, enum: LOYALTY_TIERS, default: 'silver' },
+  },
+  { _id: false },
+);
+
 const userSchema = new Schema(
   {
     /** Human-facing id the panel shows ("u-1024"); assigned on create. */
@@ -71,6 +87,7 @@ const userSchema = new Schema(
 
     wallet: { type: walletSchema, default: () => ({}) },
     stats: { type: statsSchema, default: () => ({}) },
+    loyalty: { type: loyaltySchema, default: () => ({}) },
 
     /** Which astrologers the seeker follows / has favourited. */
     favouriteAstrologers: [{ type: Schema.Types.ObjectId, ref: 'Astrologer' }],
@@ -82,6 +99,7 @@ const userSchema = new Schema(
       by: { type: Schema.Types.ObjectId, ref: 'Admin' },
     },
 
+    /** 'SA' + 6 uppercase alphanumerics, made the first time it is asked for (services/referral.service.js). */
     referralCode: { type: String, trim: true, uppercase: true, sparse: true, unique: true },
     referredBy: { type: Schema.Types.ObjectId, ref: 'User' },
 
@@ -140,3 +158,4 @@ userSchema.methods.affordableMinutes = function affordableMinutes(ratePerMinute)
 module.exports = mongoose.models.User || mongoose.model('User', userSchema);
 module.exports.AUTH_PROVIDERS = AUTH_PROVIDERS;
 module.exports.USER_STATUS = USER_STATUS;
+module.exports.LOYALTY_TIERS = LOYALTY_TIERS;

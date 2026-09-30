@@ -1,0 +1,77 @@
+{
+  "_note": "HAND-WRITTEN from AstrologyAPI's /advanced_panchang docs, NOT a captured response like the fixtures one folder up. Replace with a real capture once one live call has been made; keep the key names in services/panchang.service.js's pick() lists in sync with whatever the account actually returns.",
+  "day": "Wednesday",
+  "sunrise": "6:12:34",
+  "sunset": "19:08:12",
+  "moonrise": "10:15:22",
+  "moonset": "22:40:01",
+  "vedic_sunrise": "6:12:34",
+  "vedic_sunset": "19:08:12",
+  "tithi": {
+    "details": {
+      "tithi_number": 6,
+      "tithi_name": "Shashthi",
+      "special": "Shubha",
+      "summary": "A day for study and skill.",
+      "deity": "Kartikeya"
+    },
+    "end_time": { "hour": 20, "minute": 45, "second": 12 },
+    "end_time_ms": 1758812112000,
+    "paksha": "Shukla Paksha"
+  },
+  "nakshatra": {
+    "details": {
+      "nak_number": 14,
+      "nak_name": "Chitra",
+      "ruler": "Mars",
+      "deity": "Vishwakarma",
+      "special": "Mridu",
+      "summary": "Creative, brilliant."
+    },
+    "end_time": { "hour": 27, "minute": 5, "second": 40 },
+    "end_time_ms": 1758834940000
+  },
+  "yog": {
+    "details": {
+      "yog_number": 12,
+      "yog_name": "Dhruva",
+      "special": "Shubha",
+      "meaning": "Steady"
+    },
+    "end_time": { "hour": 14, "minute": 30, "second": 0 },
+    "end_time_ms": 1758789600000
+  },
+  "karan": {
+    "details": {
+      "karan_number": 11,
+      "karan_name": "Taitila",
+      "special": "Shubha",
+      "deity": "Vishnu"
+    },
+    "end_time": { "hour": 8, "minute": 45, "second": 12 },
+    "end_time_ms": 1758768912000
+  },
+  "hindu_maah": {
+    "adhik_status": false,
+    "purnimanta": "Bhadrapad",
+    "amanta": "Bhadrapad"
+  },
+  "paksha": "Shukla Paksha",
+  "ritu": "Sharad",
+  "sun_sign": "Virgo",
+  "moon_sign": "Libra",
+  "ayana": "Dakshinayana",
+  "panchang_yog": "Siddha",
+  "vikram_samvat": 2083,
+  "shaka_samvat": 1948,
+  "vkram_samvat_name": "Siddharthi",
+  "shaka_samvat_name": "Vishwavasu",
+  "disha_shool": "North",
+  "disha_shool_remedies": "Eat jaggery before leaving.",
+  "nak_shool": { "direction": "West", "remedies": "Eat curd." },
+  "moon_nivas": "West",
+  "abhijit_muhurta": { "start": "11:47:44", "end": "12:33:02" },
+  "rahukaal": { "start": "12:12:44", "end": "13:49:41" },
+  "guliKaal": { "start": "10:35:47", "end": "12:12:44" },
+  "yamghant_kaal": { "start": "7:49:31", "end": "9:26:28" }
+}

@@ -19,8 +19,12 @@ function targetDateFor(day) {
 /** @param {string} zodiacSign Lowercase, e.g. "leo". @param {'next'|'previous'} [day] Omitted for today. */
 async function getDailyHoroscope(zodiacSign, day) {
   const targetDate = targetDateFor(day);
-  const { payload, derived } = await getHoroscope(zodiacSign, 'daily', targetDate);
-  return normalizeHoroscope(payload, derived, zodiacSign, targetDate);
+  const result = await getHoroscope(zodiacSign, 'daily', targetDate);
+  /** On a stale fallback `result.targetDate` is the older reading's date — surfaced honestly, never relabelled as today. */
+  return normalizeHoroscope(result.payload, result.derived, zodiacSign, result.targetDate, {
+    stale: result.stale,
+    requestedDate: targetDate,
+  });
 }
 
 module.exports = { getDailyHoroscope, targetDateFor };

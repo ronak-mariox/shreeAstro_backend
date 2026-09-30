@@ -45,6 +45,8 @@ router.get('/:chatId', chatValidator.chatIdParam, chatController.state);
 router.get('/:chatId/kundli', chatValidator.chatIdParam, chatController.kundli);
 /** Generating it from inside the consultation, when there is nothing saved to show. */
 router.post('/:chatId/kundli', chatValidator.generateKundli, chatController.generateKundli);
+/** A `call` session's Agora RTC credential — see services/callToken.service.js. */
+router.get('/:chatId/call-token', chatValidator.chatIdParam, chatController.callToken);
 router.post('/:chatId/end', chatController.end);
 router.get('/:chatId/messages', chatController.messages);
 router.post('/:chatId/messages', chatController.send);

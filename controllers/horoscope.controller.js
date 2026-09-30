@@ -5,6 +5,7 @@
 
 const asyncHandler = require('../utils/asyncHandler');
 const horoscopeReadService = require('../services/horoscopeRead.service');
+const zodiacCompatibilityService = require('../services/zodiacCompatibility.service');
 
 /** GET /horoscope/daily?sign=leo&day=next|previous */
 const getDaily = asyncHandler(async (req, res) => {
@@ -12,4 +13,10 @@ const getDaily = asyncHandler(async (req, res) => {
   return res.json(result);
 });
 
-module.exports = { getDaily };
+/** GET /horoscope/compatibility?sign=leo — this sign against the other eleven, best match first. */
+const getCompatibility = asyncHandler(async (req, res) => {
+  const result = await zodiacCompatibilityService.getCompatibilityFor(req.query.sign);
+  return res.json(result);
+});
+
+module.exports = { getDaily, getCompatibility };

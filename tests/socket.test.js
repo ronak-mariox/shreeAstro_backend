@@ -87,7 +87,7 @@ const emit = (socket, event, payload) =>
   console.log('\n=== joining and messaging ===');
   const userJoin = await emit(userSocket, CHAT_EVENTS.JOIN, { chatId: String(chat._id), lastSeq: 0 });
   check('the user joins the room', userJoin.role === 'user' && userJoin.status === 'active', userJoin);
-  check('the join replays what was missed', userJoin.messages.length === 1 && userJoin.messages[0].type === 'system', userJoin.messages);
+  check('the join replays what was missed: the system opener then the astrologer\'s greeting', userJoin.messages.length === 2 && userJoin.messages[0].type === 'system' && userJoin.messages[1].senderRole === 'astrologer' && /how can I help you today/i.test(userJoin.messages[1].content?.text || ''), userJoin.messages);
 
   const astroJoin = await emit(astroSocket, CHAT_EVENTS.JOIN, { chatId: String(chat._id), lastSeq: 0 });
   check('the astrologer joins the same room', astroJoin.role === 'astrologer');

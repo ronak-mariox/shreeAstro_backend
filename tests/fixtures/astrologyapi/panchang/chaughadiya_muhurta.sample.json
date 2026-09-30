@@ -1,0 +1,25 @@
+{
+  "_note": "HAND-WRITTEN from AstrologyAPI's /chaughadiya_muhurta docs, NOT a captured response. See advanced_panchang.sample.json.",
+  "chaughadiya": {
+    "day": [
+      { "time": "06:12 - 07:49", "muhurta": "Labh" },
+      { "time": "07:49 - 09:26", "muhurta": "Amrit" },
+      { "time": "09:26 - 11:03", "muhurta": "Kaal" },
+      { "time": "11:03 - 12:40", "muhurta": "Shubh" },
+      { "time": "12:40 - 14:17", "muhurta": "Rog" },
+      { "time": "14:17 - 15:54", "muhurta": "Udveg" },
+      { "time": "15:54 - 17:31", "muhurta": "Char" },
+      { "time": "17:31 - 19:08", "muhurta": "Labh" }
+    ],
+    "night": [
+      { "time": "19:08 - 20:31", "muhurta": "Udveg" },
+      { "time": "20:31 - 21:54", "muhurta": "Shubh" },
+      { "time": "21:54 - 23:17", "muhurta": "Amrit" },
+      { "time": "23:17 - 00:40", "muhurta": "Char" },
+      { "time": "00:40 - 02:03", "muhurta": "Rog" },
+      { "time": "02:03 - 03:26", "muhurta": "Kaal" },
+      { "time": "03:26 - 04:49", "muhurta": "Labh" },
+      { "time": "04:49 - 06:12", "muhurta": "Udveg" }
+    ]
+  }
+}

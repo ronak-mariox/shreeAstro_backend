@@ -13,6 +13,7 @@ const BirthProfile = require('../models/BirthProfile');
 const KundliCache = require('../models/KundliCache');
 const client = require('../services/astrologyApi.client');
 const kundliReadService = require('../services/kundliRead.service');
+const kundliAnalysisService = require('../services/kundliAnalysis.service');
 const { computeBirthHash } = require('../utils/birthHash');
 
 const astroDetails = require('./fixtures/astrologyapi/astro_details.json');
@@ -109,6 +110,7 @@ const SOMEONE_ELSE = new mongoose.Types.ObjectId();
   check('no provider call was made — the chart SVG came from KundliCache, not a fresh fetch', providerCalled === false);
   check('lagna and nakshatra come through', overview.lagna === 'Cancer' && overview.nakshatra === 'Revati');
   check('the chart is a stored URL, not raw SVG markup', typeof overview.chart.url === 'string' && !overview.chart.url.includes('<svg'));
+  check('the overview carries the birth the chart was cast for', overview.birth && overview.birth.dateOfBirth && typeof overview.birth.timeOfBirth === 'string' && typeof overview.birth.place?.formatted === 'string', overview.birth);
   check(
     'keyPositions has exactly the 6 tiles the screen renders, in order',
     overview.keyPositions.map(p => p.label).join(',') === 'Lagna,Sun,Moon,Mars,Mercury,Jupiter',
@@ -255,6 +257,73 @@ const SOMEONE_ELSE = new mongoose.Types.ObjectId();
   const jupiterTap = await kundliReadService.getKundliAntardasha(profileId, OWNER, 'Jupiter');
   check('tapping a DIFFERENT (non-current) mahadasha lord is its own fresh call', otherLordCalls.length === 1 && otherLordCalls[0] === 'Jupiter');
   check('a non-current mahadasha has no antardasha flagged current at all', jupiterTap.antardasha.every(p => p.current === undefined));
+
+  client.callProvider = originalCallProvider;
+
+  /* ---------------------------------------------------------------- analysis */
+  section('GET /kundli/:profileId/analysis/:domain — rule-based reading, entirely from cache, never a provider call');
+  providerCalled = false;
+  client.callProvider = async () => {
+    providerCalled = true;
+    throw new Error('should never be called — a reading must never spend a credit');
+  };
+  const analysisByDomain = {};
+  for (const domain of ['career', 'finance', 'health', 'marriage']) {
+    analysisByDomain[domain] = await kundliAnalysisService.getKundliAnalysis(profileId, OWNER, domain);
+  }
+  check('no provider call was made for any of the four domains', providerCalled === false);
+  check('each answers for its own domain and profile', Object.entries(analysisByDomain).every(([domain, r]) => r.domain === domain && r.profileId === profileId));
+  check('4 tiles, a summary, 3-6 factors with a basis, <=4 periods, scores, basedOn, disclaimer', Object.values(analysisByDomain).every(r => r.tiles.length === 4 && r.summary && r.factors.length >= 3 && r.factors.length <= 6 && r.factors.every(f => f.basis) && r.periods.length <= 4 && Object.keys(r.scores).length > 0 && r.basedOn.length > 0 && r.disclaimer));
+  check('confidence high — shadbala and all three dosha reports are cached', Object.values(analysisByDomain).every(r => r.confidence === 'high'));
+  check('the profile\'s own birth details drive it: male -> Venus is the marriage karaka', analysisByDomain.marriage.basedOn.includes('Marriage karaka: Venus (male)'));
+  /** sub_vdasha/Venus was lazily cached by the dasha section above — the reading picks it up as a cache-only peek, so periods are antardasha-fine. */
+  check('the already-cached Venus antardasha refines the periods without any new call', analysisByDomain.career.periods.some(p => p.label.startsWith('Venus–')) && analysisByDomain.career.basedOn.some(b => b.includes('antardasha')));
+  check('the same request twice is byte-identical', JSON.stringify(await kundliAnalysisService.getKundliAnalysis(profileId, OWNER, 'health')) === JSON.stringify(analysisByDomain.health));
+
+  threw = undefined;
+  try {
+    await kundliAnalysisService.getKundliAnalysis(profileId, SOMEONE_ELSE, 'career');
+  } catch (error) {
+    threw = error;
+  }
+  check('someone else\'s profile is 404, same scoping as every other read', threw?.status === 404);
+
+  /** A profile whose batch has not finished (or failed outright) is refused rather than answered from a half-empty chart. */
+  const pendingProfile = await BirthProfile.create({
+    user: OWNER,
+    birthDetails: { fullName: 'Not Ready', dateOfBirth: new Date('1990-01-01T00:00:00.000Z'), timeOfBirth: '10:10', isBirthTimeKnown: true, place: { formatted: 'Pune, IN', city: 'Pune', country: 'IN', latitude: 18.5204, longitude: 73.8567, timezone: 'Asia/Kolkata' } },
+    tzone: 5.5,
+    ayanamsha: 'lahiri',
+    birthHash: computeBirthHash({ dob: '1990-01-01', tob: '10:10', lat: 18.5204, lon: 73.8567, ayanamsha: 'lahiri' }),
+    status: 'pending',
+  });
+  threw = undefined;
+  try {
+    await kundliAnalysisService.getKundliAnalysis(String(pendingProfile._id), OWNER, 'career');
+  } catch (error) {
+    threw = error;
+  }
+  check('a pending profile is 409 kundli_not_ready, and nothing was fetched', threw?.status === 409 && threw?.code === 'kundli_not_ready' && providerCalled === false);
+
+  /** A ready profile whose optional sections never made it into the cache still gets a reading — just a medium-confidence one, and still without a call. */
+  const sparseBirthHash = computeBirthHash({ dob: '1992-02-02', tob: '02:02', lat: 28.6139, lon: 77.209, ayanamsha: 'lahiri' });
+  const sparseProfile = await BirthProfile.create({
+    user: OWNER,
+    birthDetails: { fullName: 'Sparse Cache', gender: 'female', dateOfBirth: new Date('1992-02-02T00:00:00.000Z'), timeOfBirth: '02:02', isBirthTimeKnown: true, place: { formatted: 'Delhi, IN', city: 'Delhi', country: 'IN', latitude: 28.6139, longitude: 77.209, timezone: 'Asia/Kolkata' } },
+    tzone: 5.5,
+    ayanamsha: 'lahiri',
+    birthHash: sparseBirthHash,
+    status: 'ready',
+  });
+  await KundliCache.insertMany([
+    { birthHash: sparseBirthHash, endpoint: 'astro_details', pathParam: null, payload: astroDetails, fetchedAt: new Date() },
+    { birthHash: sparseBirthHash, endpoint: 'planets/extended', pathParam: null, payload: planetsExtended, fetchedAt: new Date() },
+    { birthHash: sparseBirthHash, endpoint: 'horo_chart/D1', pathParam: null, payload: require('./fixtures/astrologyapi/horo_chart_D1.json'), fetchedAt: new Date() },
+    { birthHash: sparseBirthHash, endpoint: 'major_vdasha', pathParam: null, payload: majorVdasha, fetchedAt: new Date() },
+  ]);
+  const sparse = await kundliAnalysisService.getKundliAnalysis(String(sparseProfile._id), OWNER, 'marriage');
+  check('optional sections missing -> still answers, confidence medium, no provider call for them', sparse.confidence === 'medium' && sparse.tiles.length === 4 && providerCalled === false);
+  check('female -> Jupiter is the marriage karaka', sparse.basedOn.includes('Marriage karaka: Jupiter (female)'));
 
   client.callProvider = originalCallProvider;
 

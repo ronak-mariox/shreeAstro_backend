@@ -67,14 +67,16 @@ function dailyEndpointFor(targetDate, today) {
  *   TODAY's fetch genuinely succeeded to report and log accurately, so a
  *   stale reading masking a real failure would defeat the one thing this job
  *   exists to guarantee.
- * @returns {Promise<{ payload: unknown, derived: { luckyNumber: number, luckyColor: string, energy: string } }>}
+ * @returns {Promise<{ payload: unknown, derived: { luckyNumber: number, luckyColor: string, energy: string }, targetDate: string, stale: boolean }>}
+ *   `targetDate` is the date the returned reading is actually FOR — it only
+ *   differs from the argument when `stale` is true (fallback served).
  */
 async function getHoroscope(zodiacSign, period, targetDate, callProvider, options = {}) {
   const { allowStaleFallback = true } = options;
   const cached = await HoroscopeCache.findOne({ zodiacSign, period, targetDate }).lean();
   if (cached) {
     console.log(`[astrologyCache] hit endpoint=sun_sign_prediction/${period} sign=${zodiacSign} date=${targetDate}`);
-    return { payload: cached.payload, derived: cached.derived };
+    return { payload: cached.payload, derived: cached.derived, targetDate, stale: false };
   }
   console.log(`[astrologyCache] miss endpoint=sun_sign_prediction/${period} sign=${zodiacSign} date=${targetDate} — calling provider`);
 
@@ -106,7 +108,8 @@ async function getHoroscope(zodiacSign, period, targetDate, callProvider, option
       : null;
     if (stale) {
       console.warn(`[astrologyCache] fetch failed for sign=${zodiacSign} date=${targetDate}, serving stale reading from ${stale.targetDate}:`, error.message);
-      return { payload: stale.payload, derived: stale.derived };
+      /** `targetDate` is the STALE row's own date and `stale: true` — callers must never present this as today's reading. */
+      return { payload: stale.payload, derived: stale.derived, targetDate: stale.targetDate, stale: true };
     }
     throw error;
   }
@@ -124,7 +127,7 @@ async function getHoroscope(zodiacSign, period, targetDate, callProvider, option
 
   await ApiUsage.create({ provider: ASTROLOGY_API_PROVIDER, endpoint, category: 'horoscope', calledAt: new Date() });
 
-  return { payload, derived };
+  return { payload, derived, targetDate, stale: false };
 }
 
 /**

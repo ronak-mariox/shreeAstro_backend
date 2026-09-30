@@ -15,6 +15,7 @@ const settingsService = require('../services/settings.service');
 const { packagesWithDiscounts, MAX_PACKAGE_DISCOUNT_PERCENT } = require('../config/packages');
 const integrationsService = require('../services/integrations.service');
 const supportService = require('../services/support.service');
+const commerceService = require('../services/commerce.service');
 const asyncHandler = require('../utils/asyncHandler');
 
 /** Writes the audit row for a change that has just succeeded. */
@@ -25,11 +26,12 @@ const logChange = (req, { action, area, target, targetId, details }) =>
 
 /** GET /api/v1/admin/dashboard */
 const dashboard = asyncHandler(async (req, res) => {
-  const [summary, mix] = await Promise.all([
+  const [summary, mix, commerce] = await Promise.all([
     adminService.getDashboard(),
     adminService.getConsultationMix(Number(req.query.days) || 7),
+    commerceService.dashboardStats(),
   ]);
-  return res.json({ ...summary, consultationMix: mix });
+  return res.json({ ...summary, ...commerce, consultationMix: mix });
 });
 
 /* -------------------------------------------------------------------- me */
@@ -352,11 +354,20 @@ const listArticles = asyncHandler(async (req, res) => {
   return res.json(await adminService.listArticles(req.query));
 });
 
-/** POST /api/v1/admin/articles and PUT /api/v1/admin/articles/:articleId */
+/** GET /api/v1/admin/articles/:articleId */
+const getArticle = asyncHandler(async (req, res) => {
+  return res.json({ article: await adminService.getArticle(req.params.articleId) });
+});
+
+/**
+ * POST /api/v1/admin/articles and PUT /api/v1/admin/articles/:articleId —
+ * JSON, or multipart carrying a `coverImage`.
+ */
 const saveArticle = asyncHandler(async (req, res) => {
   const article = await adminService.saveArticle({
     articleId: req.params.articleId,
     changes: req.body,
+    coverImageUrl: req.uploadedCoverUrl,
     admin: req.admin,
   });
 
@@ -696,6 +707,7 @@ module.exports = {
   listWithdrawals,
   reviewWithdrawal,
   listArticles,
+  getArticle,
   saveArticle,
   deleteArticle,
   listThirdParties,

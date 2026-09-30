@@ -126,6 +126,7 @@ async function registerUser({
   timeOfBirth,
   placeOfBirth,
   photoUrl,
+  referralCode,
 }) {
   const name = String(fullName).trim();
   const normalisedEmail = String(email).trim().toLowerCase();
@@ -165,7 +166,18 @@ async function registerUser({
   user.profile = profile._id;
   await user.save();
 
-  return { user, profile };
+  /**
+   * Who brought them in, and the welcome points. An unknown or own referral
+   * code is ignored — the account is created either way, and `referralApplied`
+   * tells the app which it was. Lazy require: the growth services are not
+   * part of auth's boot-time graph.
+   */
+  const { referralApplied } = await require('./growthHooks.service').onUserRegistered({
+    user,
+    referralCode,
+  });
+
+  return { user, profile, referralApplied };
 }
 
 /**

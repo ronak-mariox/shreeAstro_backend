@@ -9,6 +9,8 @@
  * Every one of those decisions writes an audit row — see services/audit.service.js.
  */
 
+const mongoose = require('mongoose');
+
 const User = require('../models/User');
 const Astrologer = require('../models/Astrologer');
 const AstrologerProfile = require('../models/AstrologerProfile');
@@ -184,12 +186,17 @@ async function getUserDetail(userId) {
     throw ApiError.notFound('User not found.');
   }
 
-  const [profile, consultations] = await Promise.all([
+  const referralService = require('./referral.service');
+  const loyaltyService = require('./loyalty.service');
+
+  const [profile, consultations, referral, loyaltyStanding] = await Promise.all([
     UserProfile.findOne({ user: userId }),
     ChatSession.find({ user: userId, type: 'consultation' })
       .sort({ createdAt: -1 })
       .limit(5)
       .populate('astrologer', 'name'),
+    referralService.adminStatsFor(userId),
+    loyaltyService.standingFor(userId),
   ]);
 
   return {
@@ -209,6 +216,8 @@ async function getUserDetail(userId) {
     isEmailVerified: user.isEmailVerified,
     wallet: user.wallet,
     stats: user.stats,
+    loyalty: loyaltyStanding || user.loyalty,
+    referral,
     gender: profile?.gender,
     birthDetails: profile?.birthDetails,
     zodiac: profile?.zodiac,
@@ -806,8 +815,10 @@ async function listWithdrawals({ status, page, limit }) {
 /**
  * Decides a payout.
  *
- * The money left the withdrawable balance when the request was made, so
- * approving only records the transfer, and rejecting is what puts it back.
+ * Since requests stopped deducting the balance up front, approving is what
+ * moves the money: the balance is debited here (guarded — a request that can
+ * no longer be covered stays pending) and the reservation in
+ * `pendingWithdrawal` is released; rejecting only releases the reservation.
  */
 async function reviewWithdrawal({ withdrawalId, status, admin, reason, payoutReference }) {
   const withdrawal = await Withdrawal.findById(withdrawalId);
@@ -822,6 +833,14 @@ async function reviewWithdrawal({ withdrawalId, status, admin, reason, payoutRef
   withdrawal.reviewedAt = new Date();
   withdrawal.reviewedBy = admin._id;
 
+  /**
+   * Requests made since the change are deducted HERE, on approval — the balance
+   * was untouched while pending, only reserved in `pendingWithdrawal`. Older
+   * rows (`deduction: 'on_request'`) were deducted when requested, so rejecting
+   * one refunds the balance and paying one only clears the reservation.
+   */
+  const deductedAtRequest = withdrawal.deduction !== 'on_approval';
+
   if (status === 'rejected') {
     withdrawal.rejectionReason = reason;
 
@@ -829,25 +848,42 @@ async function reviewWithdrawal({ withdrawalId, status, admin, reason, payoutRef
       { _id: withdrawal.astrologer },
       {
         $inc: {
-          'earnings.balance': withdrawal.amount,
+          ...(deductedAtRequest ? { 'earnings.balance': withdrawal.amount } : {}),
           'earnings.pendingWithdrawal': -withdrawal.amount,
         },
       },
     );
   } else {
+    let balanceAfter;
+    if (deductedAtRequest) {
+      const updated = await Astrologer.findOneAndUpdate(
+        { _id: withdrawal.astrologer },
+        { $inc: { 'earnings.pendingWithdrawal': -withdrawal.amount, 'earnings.totalWithdrawn': withdrawal.amount } },
+        { returnDocument: 'after' },
+      );
+      balanceAfter = updated?.earnings?.balance;
+    } else {
+      /** The balance guard is in the filter: the request stays pending, nothing moves, if it can no longer be covered. */
+      const updated = await Astrologer.findOneAndUpdate(
+        { _id: withdrawal.astrologer, 'earnings.balance': { $gte: withdrawal.amount } },
+        {
+          $inc: {
+            'earnings.balance': -withdrawal.amount,
+            'earnings.pendingWithdrawal': -withdrawal.amount,
+            'earnings.totalWithdrawn': withdrawal.amount,
+          },
+        },
+        { returnDocument: 'after' },
+      );
+      if (!updated) {
+        throw ApiError.badRequest('The astrologer no longer has enough balance to cover this withdrawal.');
+      }
+      balanceAfter = updated.earnings.balance;
+    }
+
     withdrawal.status = 'paid';
     withdrawal.paidAt = new Date();
     withdrawal.payoutReference = payoutReference;
-
-    await Astrologer.updateOne(
-      { _id: withdrawal.astrologer },
-      {
-        $inc: {
-          'earnings.pendingWithdrawal': -withdrawal.amount,
-          'earnings.totalWithdrawn': withdrawal.amount,
-        },
-      },
-    );
 
     await WalletTransaction.create({
       ownerRole: 'astrologer',
@@ -856,6 +892,7 @@ async function reviewWithdrawal({ withdrawalId, status, admin, reason, payoutRef
       type: 'withdrawal',
       status: 'success',
       amount: withdrawal.amount,
+      balanceAfter,
       title: 'Withdrawal paid out',
       createdByAdmin: admin._id,
     });
@@ -1270,24 +1307,39 @@ async function listArticles({ category, status, page, limit }) {
   return { items, total, page: current, limit: size };
 }
 
-async function saveArticle({ articleId, changes, admin }) {
-  if (changes.status === 'published' && !changes.publishedAt) {
-    changes.publishedAt = new Date();
+async function getArticle(articleId) {
+  const article = mongoose.isValidObjectId(articleId) ? await Article.findById(articleId) : null;
+  if (!article) {
+    throw ApiError.notFound('Article not found.');
+  }
+  return article;
+}
+
+/**
+ * Saved through the document rather than `findByIdAndUpdate`, so the model's
+ * hooks run: the slug follows a changed title and `readMinutes` follows the body.
+ */
+async function saveArticle({ articleId, changes, coverImageUrl, admin }) {
+  const values = { ...changes };
+  if (coverImageUrl) {
+    values.coverImageUrl = coverImageUrl;
+  }
+  /** An empty slug from a form means "work it out", not "set it to nothing". */
+  if (values.slug === '' || values.slug === null) {
+    delete values.slug;
   }
 
-  if (articleId) {
-    const article = await Article.findByIdAndUpdate(
-      articleId,
-      { $set: { ...changes, updatedBy: admin._id } },
-      { returnDocument: 'after' },
-    );
-    if (!article) {
-      throw ApiError.notFound('Article not found.');
-    }
-    return article;
+  const article = articleId
+    ? await getArticle(articleId)
+    : new Article({ createdBy: admin._id });
+
+  if (values.status === 'published' && !values.publishedAt && !article.publishedAt) {
+    values.publishedAt = new Date();
   }
 
-  return Article.create({ ...changes, createdBy: admin._id, updatedBy: admin._id });
+  article.set({ ...values, updatedBy: admin._id });
+  await article.save();
+  return article;
 }
 
 async function deleteArticle(articleId) {
@@ -1353,6 +1405,7 @@ module.exports = {
   listWithdrawals,
   reviewWithdrawal,
   listArticles,
+  getArticle,
   saveArticle,
   deleteArticle,
   listThirdParties,

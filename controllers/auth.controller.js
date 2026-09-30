@@ -72,7 +72,7 @@ function respondWithTokens(res, tokens, extra = {}, status = 200) {
 /** POST /api/v1/auth/register — the seeker app's two-step Create Account. */
 const register = asyncHandler(async (req, res) => {
   try {
-    const { user, profile } = await authService.registerUser({
+    const { user, profile, referralApplied } = await authService.registerUser({
       fullName: req.body.fullName,
       email: req.body.email,
       phone: req.body.phone,
@@ -81,6 +81,8 @@ const register = asyncHandler(async (req, res) => {
       timeOfBirth: req.body.timeOfBirth,
       placeOfBirth: req.body.placeOfBirth,
       photoUrl: req.uploadedPhotoUrl,
+      /** A friend's code from the website's `?ref=` or the app's field; invalid is ignored, not refused. */
+      referralCode: req.body.referralCode,
     });
 
     /**
@@ -93,7 +95,12 @@ const register = asyncHandler(async (req, res) => {
     userService.enrichZodiacFromBirthDetails(user._id).catch(() => {});
 
     const tokens = await authService.issueTokens(user._id, 'user');
-    return respondWithTokens(res, tokens, { user: toAuthUser(user, profile) }, 201);
+    return respondWithTokens(
+      res,
+      tokens,
+      { user: toAuthUser(user, profile), referralApplied: Boolean(referralApplied) },
+      201,
+    );
   } catch (error) {
     /** A registration that is refused takes its orphaned upload with it. */
     removeFile(req.file);

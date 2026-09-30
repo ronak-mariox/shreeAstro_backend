@@ -136,6 +136,30 @@ const env = {
      * that shouldn't spend its own horoscope budget in the background.
      */
     horoscopePrefetchEnabled: process.env.HOROSCOPE_PREFETCH_ENABLED !== 'false',
+    /**
+     * The website's Panchang page's own separate ceiling (`category:
+     * 'panchang'` in the credit guard) — two provider calls per cache miss,
+     * at most one miss per (date, location) per day thanks to
+     * models/PanchangCache.js's TTL, so ~62 calls a month for one location.
+     * Its own pool for the same reason as the horoscope one above: a bug or
+     * a burst here must never eat kundli generation's credits.
+     */
+    panchangMonthlyCreditLimit: Number(process.env.PANCHANG_API_MONTHLY_LIMIT || 100),
+  },
+
+  /**
+   * Where GET /panchang is computed FOR. The page shows one city's panchang
+   * for everyone (sunrise, rahu kaal and the tithi boundaries all shift with
+   * the location), so the location is a deployment setting, not a request
+   * parameter — one cache row per day, not one per visitor's city. Defaults
+   * to New Delhi; tzone is IST (see utils/istDate.js — every time the page
+   * shows is IST wall-clock).
+   */
+  panchang: {
+    latitude: Number(process.env.PANCHANG_LAT || 28.6139),
+    longitude: Number(process.env.PANCHANG_LON || 77.209),
+    tzone: Number(process.env.PANCHANG_TZONE || 5.5),
+    placeLabel: process.env.PANCHANG_PLACE_LABEL || 'New Delhi, India',
   },
 
   /**
@@ -265,6 +289,29 @@ const env = {
    * deleting this.
    */
   allowUnverifiedTopUps: process.env.ALLOW_UNVERIFIED_TOPUPS === 'true',
+
+  /**
+   * Agora RTC — the audio behind a `call` consultation
+   * (services/callToken.service.js). Billing, pauses and ending are the same
+   * ChatSession machinery as chat; Agora only carries the voice.
+   *
+   * Both values come from the Agora console (a project with its App
+   * Certificate switched on). Until both are set, `enabled` is false: a
+   * `call` session still bills as before but GET /chats/:id/call-token
+   * refuses with 503 `calls_unconfigured`, and GET /settings says
+   * `calls.enabled: false` so the apps can say so up front.
+   */
+  agora: (() => {
+    const appId = process.env.AGORA_APP_ID || '';
+    const appCertificate = process.env.AGORA_APP_CERTIFICATE || '';
+    return {
+      appId,
+      appCertificate,
+      /** How long one RTC token lives; the apps renew before it runs out. */
+      tokenTtlSeconds: Number(process.env.AGORA_TOKEN_TTL_SECONDS || 7200),
+      enabled: Boolean(appId && appCertificate),
+    };
+  })(),
 
   /**
    * The shared secret an external scheduler presents to drive a job over HTTP

@@ -24,17 +24,35 @@ function defaultCallProvider(birthProfile, endpoint, pathParam) {
 }
 
 /**
+ * The budget categories that have a ceiling of their own, apart from the
+ * general (kundli) pool — each maps to its env limit. Anything not listed
+ * here counts as 'general'.
+ */
+const DEDICATED_CATEGORY_LIMITS = {
+  horoscope: () => env.astrologyApi.horoscopeMonthlyCreditLimit,
+  panchang: () => env.astrologyApi.panchangMonthlyCreditLimit,
+};
+const DEDICATED_CATEGORIES = Object.keys(DEDICATED_CATEGORY_LIMITS);
+
+/** The ceiling one category is measured against — read at call time so a test (or a config reload) can change it. */
+function monthlyLimitFor(category) {
+  const dedicated = DEDICATED_CATEGORY_LIMITS[category];
+  return dedicated ? dedicated() : env.astrologyApi.monthlyCreditLimit;
+}
+
+/**
  * How many real calls this provider has answered since the start of this
- * calendar month, within one budget category. 'horoscope' is its own
- * separate pool (see config/env.js's horoscopeMonthlyCreditLimit) so the
- * daily prefetch job can never starve kundli generation of credits; every
- * other caller stays on 'general'. A row written before `category` existed
- * has no such field at all, not 'general' — `{ $ne: 'horoscope' }` is what
- * makes those still count towards the general pool.
+ * calendar month, within one budget category. 'horoscope' and 'panchang' are
+ * their own separate pools (see config/env.js's horoscopeMonthlyCreditLimit
+ * and panchangMonthlyCreditLimit) so the daily prefetch job and the website's
+ * panchang page can never starve kundli generation of credits; every other
+ * caller stays on 'general'. A row written before `category` existed has no
+ * such field at all, not 'general' — `{ $nin: [...] }` is what makes those
+ * still count towards the general pool.
  */
 async function getMonthlyUsageCount(provider = ASTROLOGY_API_PROVIDER, now = new Date(), category = 'general') {
   const startOfMonth = new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), 1));
-  const categoryFilter = category === 'horoscope' ? 'horoscope' : { $ne: 'horoscope' };
+  const categoryFilter = DEDICATED_CATEGORIES.includes(category) ? category : { $nin: DEDICATED_CATEGORIES };
   return ApiUsage.countDocuments({ provider, calledAt: { $gte: startOfMonth }, category: categoryFilter });
 }
 
@@ -49,11 +67,11 @@ async function getMonthlyUsageCount(provider = ASTROLOGY_API_PROVIDER, now = new
  *   default), or the full batch size for an upfront check before firing
  *   several in parallel (see services/kundli.service.js), so a doomed batch
  *   is refused as one clear error instead of failing call-by-call at the edge.
- * @param {'general'|'horoscope'} [category]
+ * @param {'general'|'horoscope'|'panchang'} [category]
  */
 async function assertCreditBudget(provider = ASTROLOGY_API_PROVIDER, additionalCalls = 1, category = 'general') {
   const used = await getMonthlyUsageCount(provider, new Date(), category);
-  const limit = category === 'horoscope' ? env.astrologyApi.horoscopeMonthlyCreditLimit : env.astrologyApi.monthlyCreditLimit;
+  const limit = monthlyLimitFor(category);
   if (used + additionalCalls > limit) {
     throw ApiError.tooManyRequests(
       `The AstrologyAPI monthly ${category} credit limit (${limit}) would be exceeded by this request (${used} calls already made this month).`,

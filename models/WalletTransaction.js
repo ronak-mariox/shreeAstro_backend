@@ -29,6 +29,11 @@ const TRANSACTION_TYPES = [
   'commission',
   'bonus',
   'adjustment',
+  'order_payment',
+  'puja_booking',
+  /** Credits from the growth programmes: a tier's cashback on a consultation, and a referral paying out. `bonus` stays for admin bonuses and coupon top-up bonuses. */
+  'cashback',
+  'referral_bonus',
 ];
 
 const STATUSES = ['pending', 'success', 'failed', 'cancelled'];
@@ -58,6 +63,9 @@ const walletTransactionSchema = new Schema(
 
     /** What this movement was about, when it came from a consultation. */
     chatSession: { type: Schema.Types.ObjectId, ref: 'ChatSession' },
+    /** …or from the store, or a puja booking. A refund links the same thing its charge did. */
+    order: { type: Schema.Types.ObjectId, ref: 'Order' },
+    pujaBooking: { type: Schema.Types.ObjectId, ref: 'PujaBooking' },
 
     /** Payment-gateway details, for a top-up. */
     payment: {
@@ -66,6 +74,17 @@ const walletTransactionSchema = new Schema(
       paymentId: { type: String, trim: true },
       method: { type: String, trim: true },
       failureReason: { type: String, trim: true },
+    },
+
+    /**
+     * A top-up started with a coupon: the code, and the bonus it will credit
+     * once the payment is confirmed (services/wallet.service.js's confirmTopUp).
+     */
+    coupon: {
+      code: { type: String, trim: true, uppercase: true },
+      coupon: { type: Schema.Types.ObjectId, ref: 'Coupon' },
+      bonusAmount: { type: Number, min: 0 },
+      bonusTransaction: { type: Schema.Types.ObjectId, ref: 'WalletTransaction' },
     },
 
     /** Set when an admin created or reversed the row by hand. */
