@@ -246,6 +246,42 @@ Fixed at request time so a mid-chat price change cannot affect it.
 A chat cannot start unless the seeker has free minutes or can pay for at least
 one minute.
 
+### Voice calls (Agora)
+
+A call is the same session as a chat — `POST /chats` with `"channel": "call"`,
+accepted, billed per minute (or by package), paused and ended by exactly the
+same endpoints and socket events — only the audio is different: it runs over
+**Agora RTC**, and the server's part is handing each side the credential to
+join the session's channel.
+
+| Method | Path | Who | What |
+|---|---|---|---|
+| GET | `/chats/:id/call-token` | either | The Agora RTC token for this call. Only while the session is `active`. |
+
+```jsonc
+GET /chats/:id/call-token
+
+-> { "provider": "agora",
+     "appId": "<AGORA_APP_ID>",
+     "channelName": "<the chat id>",
+     "uid": 1001,          // the caller's own uid: seeker 1001, astrologer 2001 — always
+     "peerUid": 2001,      // so each app knows which uid is the other side
+     "role": "user",       // or "astrologer"
+     "token": "007...",    // Agora's versioned RTC token, PUBLISHER role
+     "expiresAt": "2026-09-30T10:00:00.000Z",
+     "ttlSeconds": 7200 }  // AGORA_TOKEN_TTL_SECONDS; fetch again and renewToken before it runs out
+```
+
+Refusals: `403`/`404` for anyone not part of the session; `400 not_a_call` on a
+chat session; `409 not_active` while it is still `requested` or once it has
+ended; `503 calls_unconfigured` when `AGORA_APP_ID` / `AGORA_APP_CERTIFICATE`
+are not set on this server (the session still bills as usual — the apps should
+show the message and offer End).
+
+`GET /settings` carries `calls: { provider: "agora", enabled }` so an app can
+tell before the request whether this server can hand out tokens at all. The
+credentials themselves are never sent anywhere.
+
 ---
 
 ## Live chat (socket.io)
@@ -408,7 +444,7 @@ a log you can change is not a log.
 
 | Method | Path | Who | What |
 |---|---|---|---|
-| GET | `/settings` | anyone | Recharge limits, feature switches, app versions. |
+| GET | `/settings` | anyone | Recharge limits, feature switches, app versions, and `calls: { provider: "agora", enabled }` — whether this server can issue voice-call tokens (see "Voice calls" under `/chats`). |
 | GET | `/horoscope` | anyone | `?sign=Leo` for one, none for all twelve — placeholder readings, see "Still to plug in" below. |
 | GET | `/horoscope/daily` | anyone | `?sign=leo&day=next\|previous` — real AstrologyAPI reading (`services/horoscopeCache.service.js`): the first request for a (sign, date) calls the provider and stores the verbatim payload in `HoroscopeCache`; every later request for that sign that day is served from the cache. If the provider fails, the most recent older reading is served with `stale: true` and `date` set to that reading's real date (`requested_date` = the day asked for). |
 | GET | `/horoscope/compatibility` | anyone | `?sign=leo` — real AstrologyAPI `zodiac_compatibility` for this sign against the other eleven (`{ sign, items: [{ partner_sign, percentage, report }] }`, best first). Each pair is fetched once ever and kept in `ZodiacCompatibilityCache`; the first request for a sign costs 11 general credits, all later ones none. |

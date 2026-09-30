@@ -13,6 +13,7 @@
 
 const Settings = require('../models/Settings');
 const ApiError = require('../utils/ApiError');
+const env = require('../config/env');
 const { mergePackageDiscounts } = require('../config/packages');
 
 /** How long a cached copy is trusted, in milliseconds. */
@@ -161,6 +162,15 @@ async function publicSettings() {
       enabled: settings.referral?.enabled !== false,
       rewardAmount: settings.referral?.rewardAmount,
       minFirstSpend: settings.referral?.minFirstSpend,
+    },
+    /**
+     * Whether this server can hand out voice-call tokens at all (config/env.js's
+     * `agora`) — deployment fact, not an admin switch; `features.voiceConsultations`
+     * above is the admin's own on/off for offering calls. Never the credentials.
+     */
+    calls: {
+      provider: 'agora',
+      enabled: env.agora.enabled,
     },
   };
 }

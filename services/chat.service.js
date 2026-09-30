@@ -2155,6 +2155,8 @@ async function joinChat({ chatId, accountId, lastSeq = 0 }) {
     chatId: String(chat._id),
     role,
     status: chat.status,
+    /** 'chat' or 'call' — the apps pick the voice-call layout off this on every (re)join. */
+    channel: chat.channel,
     /**
      * Whether billing is paused for insufficient balance, RIGHT NOW — not
      * just "was a pause event ever seen." A live pause/resume push

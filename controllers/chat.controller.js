@@ -9,6 +9,7 @@
 
 const chatService = require('../services/chat.service');
 const kundliReadService = require('../services/kundliRead.service');
+const callTokenService = require('../services/callToken.service');
 const asyncHandler = require('../utils/asyncHandler');
 
 /** POST /api/v1/chats/precheck — is the seeker's balance enough to start, and for how many minutes? Creates nothing. */
@@ -125,6 +126,18 @@ const cancel = asyncHandler(async (req, res) => {
     userId: req.account.accountId,
   });
   return res.json({ chatId: String(chat._id), status: chat.status });
+});
+
+/**
+ * GET /api/v1/chats/:chatId/call-token — the Agora RTC token to join this
+ * call's audio. Either side, only while the call session is active.
+ */
+const callToken = asyncHandler(async (req, res) => {
+  const result = await callTokenService.issueCallToken({
+    chatId: req.params.chatId,
+    accountId: req.account.accountId,
+  });
+  return res.json(result);
 });
 
 /** POST /api/v1/chats/:chatId/end — either side may end it. */
@@ -250,4 +263,4 @@ const askAi = asyncHandler(async (req, res) => {
   return res.status(201).json(result);
 });
 
-module.exports = { aiThread, askAi, precheck, state, request, continueAfterPackage, kundli, generateKundli, accept, reject, cancel, end, rate, list, messages, send };
+module.exports = { aiThread, askAi, precheck, state, request, continueAfterPackage, kundli, generateKundli, accept, reject, cancel, callToken, end, rate, list, messages, send };

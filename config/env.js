@@ -291,6 +291,29 @@ const env = {
   allowUnverifiedTopUps: process.env.ALLOW_UNVERIFIED_TOPUPS === 'true',
 
   /**
+   * Agora RTC — the audio behind a `call` consultation
+   * (services/callToken.service.js). Billing, pauses and ending are the same
+   * ChatSession machinery as chat; Agora only carries the voice.
+   *
+   * Both values come from the Agora console (a project with its App
+   * Certificate switched on). Until both are set, `enabled` is false: a
+   * `call` session still bills as before but GET /chats/:id/call-token
+   * refuses with 503 `calls_unconfigured`, and GET /settings says
+   * `calls.enabled: false` so the apps can say so up front.
+   */
+  agora: (() => {
+    const appId = process.env.AGORA_APP_ID || '';
+    const appCertificate = process.env.AGORA_APP_CERTIFICATE || '';
+    return {
+      appId,
+      appCertificate,
+      /** How long one RTC token lives; the apps renew before it runs out. */
+      tokenTtlSeconds: Number(process.env.AGORA_TOKEN_TTL_SECONDS || 7200),
+      enabled: Boolean(appId && appCertificate),
+    };
+  })(),
+
+  /**
    * The shared secret an external scheduler presents to drive a job over HTTP
    * (routes/internal.routes.js).
    *
