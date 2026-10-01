@@ -22,7 +22,7 @@ const { Server } = require('socket.io');
 
 const env = require('../config/env');
 const { verifyToken, tokenFrom } = require('../utils/token');
-const { setAstrologerOnline } = require('../services/presence.service');
+const { touchAstrologerSeen } = require('../services/presence.service');
 const chatService = require('../services/chat.service');
 const { registerChatHandlers } = require('./chat.handlers');
 
@@ -106,7 +106,12 @@ function initSocket(server) {
 
         if (!stillConnected || stillConnected.size === 0) {
           try {
-            await setAstrologerOnline(accountId, false);
+            /**
+             * Availability is NOT touched: "Online" is the astrologer's own
+             * toggle and survives the app closing (a request still reaches
+             * them as a push). Only the last-seen time is noted.
+             */
+            await touchAstrologerSeen(accountId);
             /**
              * Pauses billing on whatever this astrologer has active — the
              * seeker's meter must not run while nobody is there to answer.
@@ -148,16 +153,17 @@ function initSocket(server) {
      * Presence and reconnect bookkeeping, last: it talks to the database, and
      * nothing the client can send should have to wait behind it.
      *
-     * An astrologer holding a socket is what "Online" means in the seeker's
-     * directory, and reconnecting resumes whatever their own disconnect had
-     * paused. A seeker reconnecting clears the mark that would otherwise have
+     * An astrologer reconnecting resumes whatever their own disconnect had
+     * paused — it does not put them "Online": that is their dashboard toggle
+     * alone (see services/presence.service.js), so opening the app while
+     * switched off stays off. A seeker reconnecting clears the mark that would otherwise have
      * ended their consultation. Both are a no-op in the ordinary case, and both
      * are a nicety next to the connection itself — a failure is logged and
      * shrugged off rather than allowed to break a connection that is fine.
      */
     try {
       if (role === 'astrologer') {
-        await setAstrologerOnline(accountId, true);
+        await touchAstrologerSeen(accountId);
         await chatService.resumeSessionsForAstrologer(accountId);
       } else if (role === 'user') {
         await chatService.markUserBack(accountId);

@@ -351,17 +351,172 @@ instead of a duplicate.
 |---|---|---|---|
 | GET | `/wallet` | both | Balance (seeker) or earnings (astrologer). |
 | GET | `/wallet/transactions` | both | Ledger. `?filter=all\|added\|spent`. |
-| POST | `/wallet/topup` | user | Start adding money. |
-| POST | `/wallet/topup/confirm` | user | The payment succeeded. |
+| POST | `/wallet/topup` | user | Start adding money — opens a Razorpay order when the gateway is configured. See "Payments (Razorpay)" below. |
+| POST | `/wallet/topup/confirm` | user | The checkout came back successful; the payment is verified, then credited. |
+| POST | `/wallet/topup/cancel` | user | The checkout was dismissed or the payment failed. Best-effort, always 200. |
 | GET | `/wallet/withdrawals` | astrologer | Payout history. |
 | POST | `/wallet/withdrawals` | astrologer | Ask to be paid out. The balance is **not** deducted here: the amount is reserved in `earnings.pendingWithdrawal` (a request must fit in `balance − pendingWithdrawal`; `GET /wallet` reports that as `available`) and the astrologer is told to allow up to 24 hours for approval. |
 
-> **No payment gateway yet.** `POST /wallet/topup` returns an order the app can
-> confirm straight away. Wire Razorpay (or another) into `startTopUp`, and
-> verify its signature in `confirmTopUp` — both in `services/wallet.service.js`.
-
 Every rupee moves through one function, `post()` in `services/wallet.service.js`.
-Balances are running totals kept by that function; nothing else writes them.
+Balances are running totals kept by that function; nothing else writes them
+(a top-up's own credit is `settleTopUp` in the same file — the one other writer,
+and for the same reason: one place, exactly once).
+
+### Payments (Razorpay)
+
+A top-up is paid through Razorpay's checkout. Nothing is credited until the
+server itself has verified the payment — by the signature the checkout hands
+the app, or by the webhook Razorpay posts directly — and whichever arrives
+first credits; the other finds it done. Code: `services/razorpay.service.js`
+(the gateway: three REST calls and two HMACs, no SDK) and `startTopUp` /
+`confirmTopUp` / `cancelTopUp` / `applyRazorpayEvent` in
+`services/wallet.service.js`.
+
+**Configuring it — two ways, the panel wins.**
+
+1. Admin panel → Settings → Third parties → **Razorpay** (`keyId`, `keySecret`,
+   `webhookSecret`). Saved as `INTEGRATION_RAZORPAY_KEY_ID` / `_KEY_SECRET` /
+   `_WEBHOOK_SECRET` / `_ENABLED` in `.env` and in force for the very next
+   top-up, no restart. While it is enabled (with a key id and key secret) it
+   is used whole — key pair *and* webhook secret.
+2. Otherwise the environment: `RAZORPAY_KEY_ID`, `RAZORPAY_KEY_SECRET`,
+   `RAZORPAY_WEBHOOK_SECRET`.
+
+The panel writes the `.env` *file*, which does not persist on a read-only host
+(Vercel): there, set the three `RAZORPAY_*` variables in the deployment's
+environment instead.
+
+**Test mode vs live mode is only which keys are configured.** `rzp_test_…`
+keys take the test instruments below and move no money; `rzp_live_…` keys
+charge for real. There is no code switch. `GET /settings` reports it:
+`payments: { gateway: 'razorpay', enabled: true, testMode, keyId }` — or
+`{ gateway: 'none', enabled: false, testMode: false }` with nothing configured.
+(Test keys on a production server mean a test card credits a real wallet; the
+server warns about that at boot.)
+
+With nothing configured there is no gateway: in development `POST /wallet/topup`
+answers `gateway: 'none'` and the app confirms straight away, as before; in
+production it answers 503 `payments_unavailable` (unless
+`ALLOW_UNVERIFIED_TOPUPS=true`). A `gateway: 'none'` row can never be confirmed
+in production without that switch, even once Razorpay is configured.
+
+**1. Start — `POST /wallet/topup`** *(user)*
+
+```jsonc
+// request
+{ "amount": 100, "couponCode": "TOPUP10" }        // rupees; couponCode optional
+
+// 201
+{
+  "transactionId": "66f…",          // ours — send it back on confirm / cancel
+  "reference": "TXN-8FA21C",
+  "orderId": "order_Pq…",           // the Razorpay order id
+  "amount": 100,                    // rupees
+  "couponCode": "TOPUP10",          // or null
+  "bonusAmount": 10,                // credited on top once the payment is verified
+  "gateway": "razorpay",
+  "razorpay": {
+    "keyId": "rzp_test_…",          // public — open the checkout with it
+    "orderId": "order_Pq…",
+    "amount": 10000,                // paise
+    "currency": "INR",
+    "name": "Shree Astro",
+    "description": "Wallet top-up",
+    "prefill": { "name": "…", "contact": "+919…", "email": "…" }   // empty fields omitted
+  }
+}
+```
+
+The Razorpay order is opened for `amount × 100` paise with
+`receipt = reference` and `notes: { transactionId, userId }`. If Razorpay
+refuses or cannot be reached: 502 `payment_gateway_error` (with Razorpay's own
+description) and the row is closed as `failed`. Without a gateway the reply is
+the same minus `razorpay`, with `gateway: "none"` and an `ORD-…` order id.
+
+**2. Confirm — `POST /wallet/topup/confirm`** *(user)*
+
+```jsonc
+// request — what the checkout's success handler returned, in either spelling
+{ "transactionId": "66f…",
+  "razorpayPaymentId": "pay_…", "razorpayOrderId": "order_…", "razorpaySignature": "…" }
+{ "transactionId": "66f…",
+  "razorpay_payment_id": "pay_…", "razorpay_order_id": "order_…", "razorpay_signature": "…" }
+
+// 200
+{ "transaction": { "id": "66f…", "reference": "TXN-8FA21C", "amount": 100, "balanceAfter": 610,
+                   "status": "success", "method": "upi", "couponCode": "TOPUP10", "bonusAmount": 10 } }
+```
+
+Checked in this order: the order id is the row's own and the signature is
+Razorpay's over `order_id|payment_id` (else 400 `payment_signature_invalid` —
+also when any of the three is missing); then the payment is read back from
+Razorpay and must be for that order, for the full amount, and `captured` — an
+`authorized` one is captured first — else 400 `payment_not_captured`. `method`
+is Razorpay's (`upi` / `card` / `netbanking` / `wallet`). Confirming a top-up
+that is already successful returns it again and credits nothing. Other errors:
+404 (not this seeker's), 422 (malformed `transactionId`), 502
+`payment_gateway_error`, 503 `payments_unavailable`. A `gateway: "none"`
+top-up is confirmed with just `{ transactionId, paymentId?, method? }`, as
+before.
+
+**3. Cancel — `POST /wallet/topup/cancel`** *(user)*
+
+```jsonc
+// request
+{ "transactionId": "66f…", "reason": "Checkout dismissed" }    // reason optional
+
+// 200 — always, for a well-formed id
+{ "ok": true, "cancelled": true,
+  "transaction": { "id": "66f…", "reference": "TXN-8FA21C", "amount": 100, "balanceAfter": 510,
+                   "status": "failed", "couponCode": null, "bonusAmount": 0,
+                   "failureReason": "Checkout dismissed" } }
+```
+
+A `pending` top-up becomes `failed` with the reason. `cancelled: false` means
+there was nothing to cancel: the row was already final (it is returned as it
+stands — a `success` row is never touched) or is not this seeker's
+(`transaction: null`). A cancel does not forfeit money: if Razorpay later
+proves a captured payment for that order (a UPI request approved after the
+checkout was closed, a second attempt after a declined card), the `failed` row
+is still credited — once — by the webhook or by a confirm with a valid
+signature.
+
+**The webhook — `POST /api/v1/payments/razorpay/webhook`** *(Razorpay; no token)*
+
+In the Razorpay dashboard → Account & Settings → Webhooks → *Add new webhook*:
+
+- URL: `https://<your-backend>/api/v1/payments/razorpay/webhook`
+- Secret: any long random value — and the same value as `webhookSecret` on the
+  panel / `RAZORPAY_WEBHOOK_SECRET`
+- Active events: `payment.captured`, `order.paid`, `payment.failed`
+
+(Test mode and live mode have separate webhook lists in the dashboard — add it
+in the mode whose keys are configured.)
+
+Verified with `X-Razorpay-Signature` (HMAC-SHA256 of the raw body under the
+webhook secret): 400 `webhook_signature_invalid` when it is missing or wrong,
+503 `webhook_unconfigured` when no webhook secret is set. `payment.captured` /
+`order.paid` → the top-up with that `payment.orderId` is credited through the
+same exactly-once path as confirm (amount must match), and the seeker's chats
+paused for balance are resumed. `payment.failed` → a still-pending top-up is
+marked `failed`. Handled events answer 200 `{ "ok": true }`; anything else
+genuine (another event, an order that is not ours, a wrong amount) answers 200
+`{ "ok": true, "ignored": true }` so Razorpay does not retry it.
+
+Without the webhook, top-ups still work — but a payment whose app never came
+back to confirm (killed mid-payment, no signal) is never credited.
+
+**Test mode** (test keys from Dashboard → Account & Settings → API Keys, with
+the dashboard switched to *Test Mode*):
+
+- UPI: `success@razorpay` succeeds, `failure@razorpay` fails.
+- Card: `4111 1111 1111 1111`, any future expiry, any CVV (any OTP on the
+  bank page).
+- Netbanking / wallets: pick any, then choose *Success* or *Failure* on
+  Razorpay's mock bank page.
+
+`npm run test:razorpay` covers all of it against an in-memory Razorpay — no
+call leaves the machine.
 
 ---
 
@@ -371,6 +526,125 @@ Balances are running totals kept by that function; nothing else writes them.
 |---|---|---|
 | GET | `/notifications` | The list, plus an unread count. |
 | POST | `/notifications/read` | `{ notificationId }`, or nothing to mark all. |
+
+### Push notifications (FCM) — `/devices` *(both apps)*
+
+Every notification is stored (the list above), emitted on the socket
+(`notification:new`) and pushed through Firebase Cloud Messaging to every
+device the account has registered. The apps register their FCM token here;
+the role on the access token decides whether it is filed under the seeker or
+the astrologer. Admins have no devices (403).
+
+| Method | Path | What |
+|---|---|---|
+| POST | `/devices` | Register this install's FCM token, or refresh it. |
+| DELETE | `/devices` | Take it back — call on logout, before dropping the access token. |
+| POST | `/devices/test` | Send yourself a test push and see what became of it per device. |
+
+**Register — `POST /devices`**
+
+```jsonc
+// request
+{ "fcmToken": "fGx…:APA91b…", "platform": "android", "appVersion": "1.4.0" }   // appVersion optional
+
+// 200
+{ "ok": true, "devices": 2 }          // how many devices the account now has
+```
+
+Call it after sign-in, on every app start while signed in, and whenever
+Firebase rotates the token (`onTokenRefresh`). It is an upsert by token:
+registering one that is already there refreshes `platform`, `appVersion`
+(kept when not sent) and `lastSeenAt` rather than adding a row. Two rules:
+
+- **A token belongs to one account at a time.** Registering it removes it
+  from every other account — seekers and astrologers both — so a phone that
+  changed hands stops getting the previous account's pushes.
+- **At most 10 devices per account.** An eleventh drops the one seen longest
+  ago.
+
+422 with `fields` when `fcmToken` is not a non-empty string of at most 4096
+characters, `platform` is not `android` / `ios` / `web`, or `appVersion` is
+over 40 characters.
+
+**Unregister — `DELETE /devices`**
+
+```jsonc
+// request (a JSON body on a DELETE)
+{ "fcmToken": "fGx…:APA91b…" }
+
+// 200 — also when the token was not registered
+{ "ok": true }
+```
+
+**Test — `POST /devices/test`** (no body)
+
+```jsonc
+// 200
+{ "ok": true, "devices": 2,
+  "push": [ { "sent": true }, { "sent": false, "reason": "invalid_token" } ] }
+```
+
+Creates a real notification for the caller ("Test notification" / "Push
+notifications are working.") and, unlike everywhere else, waits for the push:
+`push` has one entry per registered device, `devices` is how many were tried
+(`0` and `[]` — the app never registered a token). `reason` says why nothing
+arrived:
+
+| `reason` | Meaning |
+|---|---|
+| `not_configured` | Firebase is not set up, or is switched off, on the admin panel. |
+| `invalid_token` | FCM says that install is gone (uninstalled, data cleared). The device has been removed from the account. |
+| `provider_error` | Anything else FCM refused — wrong service account, a token from another Firebase project, iOS without an APNs key, an outage. The server log has the message. |
+| `push_disabled` | The account has `notificationPrefs.push` switched off. |
+| `no_token` | A device row with no token. |
+
+**What the apps receive**
+
+A *notification* message, so Android and iOS draw it in the tray themselves
+when the app is in the background or killed; in the foreground it arrives in
+the app's own `onMessage` handler.
+
+```jsonc
+{
+  "notification": { "title": "Money added", "body": "₹100 was added to your wallet." },
+  "data": {
+    "notificationId": "66f1c0…",            // the row in GET /notifications — for POST /notifications/read
+    "type": "wallet_credit",                // same values as the list's `type`
+    "action": "{\"screen\":\"wallets\"}"    // JSON string of { screen, id? }, or "" when there is nowhere to go
+  },
+  "android": { "priority": "high", "notification": { "channelId": "default", "sound": "default" } },
+  "apns": { "payload": { "aps": { "sound": "default" } } }
+}
+```
+
+FCM `data` values are always strings — `JSON.parse(data.action)` when it is
+not empty. The Android apps must create a notification channel with the id
+`default`; Android 8+ silently drops a notification whose channel does not
+exist.
+
+A push is never sent to an account whose `notificationPrefs.push` is `false`
+(`PATCH /users/me/notification-prefs`); the notification is still stored and
+still emitted on the socket. A token FCM reports as dead is removed from the
+account on the spot, so there is nothing for the apps to clean up.
+
+**Turning it on** — nothing is sent until Firebase is configured; until then
+every push answers `not_configured` and nothing else changes. In the Firebase
+console → Project settings → Service accounts → *Generate new private key*,
+then Admin panel → Settings → Third parties → **Firebase**, and enable the
+card:
+
+| Field | From the downloaded JSON |
+|---|---|
+| `projectId` | `project_id` |
+| `clientEmail` | `client_email` |
+| `privateKey` | `private_key` — the whole value, `-----BEGIN PRIVATE KEY-----…`, pasted as it appears in the file (with its `\n`s) |
+
+It must be the service account of the same Firebase project the apps'
+`google-services.json` / `GoogleService-Info.plist` come from. Saved to
+`INTEGRATION_FIREBASE_*` in `.env`; takes effect on the next push, no restart.
+
+`npm run test:push` covers all of it against a stubbed sender — nothing
+reaches Firebase.
 
 ---
 
@@ -444,7 +718,7 @@ a log you can change is not a log.
 
 | Method | Path | Who | What |
 |---|---|---|---|
-| GET | `/settings` | anyone | Recharge limits, feature switches, app versions, and `calls: { provider: "agora", enabled }` — whether this server can issue voice-call tokens (see "Voice calls" under `/chats`). |
+| GET | `/settings` | anyone | Recharge limits, feature switches, app versions, `calls: { provider: "agora", enabled }` — whether this server can issue voice-call tokens (see "Voice calls" under `/chats`) — and `payments: { gateway: "razorpay" \| "none", enabled, testMode, keyId? }` — how a top-up is paid for here (see "Payments (Razorpay)" under `/wallet`). |
 | GET | `/horoscope` | anyone | `?sign=Leo` for one, none for all twelve — placeholder readings, see "Still to plug in" below. |
 | GET | `/horoscope/daily` | anyone | `?sign=leo&day=next\|previous` — real AstrologyAPI reading (`services/horoscopeCache.service.js`): the first request for a (sign, date) calls the provider and stores the verbatim payload in `HoroscopeCache`; every later request for that sign that day is served from the cache. If the provider fails, the most recent older reading is served with `stale: true` and `date` set to that reading's real date (`requested_date` = the day asked for). |
 | GET | `/horoscope/compatibility` | anyone | `?sign=leo` — real AstrologyAPI `zodiac_compatibility` for this sign against the other eleven (`{ sign, items: [{ partner_sign, percentage, report }] }`, best first). Each pair is fetched once ever and kept in `ZodiacCompatibilityCache`; the first request for a sign costs 11 general credits, all later ones none. |
@@ -624,7 +898,8 @@ HTTP. That is why the socket layer and the REST layer can share one rulebook.
 | What | Where |
 |---|---|
 | SMS / email for OTPs | `deliverOtp` in `services/otp.service.js` |
-| Payment gateway | `startTopUp` / `confirmTopUp` in `services/wallet.service.js` |
+| Razorpay credentials | code is complete (`services/razorpay.service.js`); the keys still have to be entered — Settings → Third parties → Razorpay, or `RAZORPAY_*` env — and the webhook added in the Razorpay dashboard. See "Payments (Razorpay)" |
+| Firebase service account (push) | code is complete (`services/push.service.js`, `/devices`); pushes answer `not_configured` until the service account is entered under Settings → Third parties → Firebase. See "Push notifications (FCM)" |
 | Ephemeris for kundli charts | `saveKundli` in `services/user.service.js` |
 | Google / Apple sign-in credentials | code is complete (`loginWithGoogle`/`loginWithApple` in `services/auth.service.js`); an admin still has to enter each provider's credentials under Settings → Third Parties, or the endpoint answers 400 `google_not_configured` / `apple_not_configured` |
 | Image and audio messages | `ENABLED_TYPES` in `models/Chat.js` |

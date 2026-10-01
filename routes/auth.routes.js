@@ -3,7 +3,7 @@
 const express = require('express');
 
 const authController = require('../controllers/auth.controller');
-const { authenticate } = require('../middlewares/auth.middleware');
+const { authenticate, optionalAuthenticate } = require('../middlewares/auth.middleware');
 const { rateLimit } = require('../middlewares/rateLimit.middleware');
 const { uploadProfilePhoto } = require('../middlewares/upload.middleware');
 const {
@@ -96,7 +96,8 @@ router.post('/admin/reset-password', limitVerify, validateAdminResetPassword, au
  * access token that has probably already expired.
  */
 router.post('/refresh', authController.refresh);
-router.post('/logout', authController.logout);
+/** Optional auth: the apps sign out with only their access token, and an astrologer signing out must go offline. */
+router.post('/logout', optionalAuthenticate, authController.logout);
 
 router.get('/me', authenticate, authController.me);
 

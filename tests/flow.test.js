@@ -3,6 +3,10 @@ process.env.MONGODB_URI =
   process.env.TEST_MONGODB_URI || 'mongodb://127.0.0.1:27017/shree_astro_test_flow';
 process.env.REDIS_KEY_PREFIX = 'shreeastro-test:';
 process.env.NODE_ENV = 'development';
+/** This suite walks the gateway-less top-up; pinned so keys in a developer's .env can never send it to Razorpay. */
+process.env.RAZORPAY_KEY_ID = '';
+process.env.RAZORPAY_KEY_SECRET = '';
+process.env.INTEGRATION_RAZORPAY_ENABLED = 'false';
 process.env.OTP_MASTER_CODE = '123456';
 
 const mongoose = require('mongoose');

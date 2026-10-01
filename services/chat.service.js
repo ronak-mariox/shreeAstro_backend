@@ -388,8 +388,9 @@ async function requestChat({ userId, astrologerId, channel = 'chat', intake = {}
     ownerRole: 'astrologer',
     ownerId: astrologerId,
     type: 'consultation_request',
-    title: 'New chat request',
-    body: `${user.name} wants to chat with you.`,
+    /** The astrologer's phone shows this in the tray — a call must not read as a chat. */
+    title: chat.channel === 'call' ? 'New call request' : 'New chat request',
+    body: chat.channel === 'call' ? `${user.name} wants to talk to you on a call.` : `${user.name} wants to chat with you.`,
     action: { screen: 'consultation', id: String(chat._id) },
   });
 

@@ -1,11 +1,18 @@
 /**
- * Wallet top-ups while there is no payment gateway.
+ * Wallet top-ups while there is no payment gateway configured.
  *
  * start + confirm credit a wallet with nothing in between checking that anyone
  * paid, which is how the app has always been walked through — and which in
  * production is free money, spendable on consultations that pay astrologers
  * real rupees. So in production it is closed unless ALLOW_UNVERIFIED_TOPUPS
  * opens it on purpose, and an admin can still credit a wallet by hand.
+ *
+ * The other half of the rule — Razorpay configured, so top-ups are verified
+ * and always allowed, while an old gateway-less row still cannot be cashed in —
+ * is tests/razorpay-topup.test.js.
+ *
+ * Needs a MongoDB *replica set* (the credit is a transaction), so point
+ * TEST_MONGODB_URI at one.
  *
  * `env.isProduction` is flipped directly here rather than by running this whole
  * file as production, so the check is exercised exactly as deployed while the
@@ -14,6 +21,10 @@
 process.env.MONGODB_URI =
   process.env.TEST_MONGODB_URI || 'mongodb://127.0.0.1:27017/shree_astro_test_wallet_guard';
 process.env.NODE_ENV = 'development';
+/** This suite walks the gateway-less top-up; pinned so keys in a developer's .env can never send it to Razorpay. */
+process.env.RAZORPAY_KEY_ID = '';
+process.env.RAZORPAY_KEY_SECRET = '';
+process.env.INTEGRATION_RAZORPAY_ENABLED = 'false';
 
 const mongoose = require('mongoose');
 

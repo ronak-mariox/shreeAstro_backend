@@ -275,20 +275,55 @@ const env = {
   /**
    * Whether a wallet top-up may complete with no payment gateway behind it.
    *
-   * There is no gateway wired up yet: services/wallet.service.js's startTopUp
-   * opens a pending row and confirmTopUp credits the wallet, with nothing in
-   * between verifying that anyone paid. That is fine in development and it is
-   * how the app has always been walked through — but in production it is free
-   * money, spendable on consultations that pay astrologers real rupees out the
-   * other side.
+   * Only matters while Razorpay (below) is NOT configured. Then
+   * services/wallet.service.js's startTopUp opens a pending row and
+   * confirmTopUp credits the wallet, with nothing in between verifying that
+   * anyone paid. That is fine in development and it is how the app has always
+   * been walked through — but in production it is free money, spendable on
+   * consultations that pay astrologers real rupees out the other side.
    *
    * So in production that path is closed unless this explicitly opens it.
    * Admins can still credit a wallet by hand (POST /admin/wallets/adjust) for
-   * payments collected some other way, and the two-step start/confirm shape is
-   * unchanged, so wiring a real gateway means filling the gap between them and
-   * deleting this.
+   * payments collected some other way. With Razorpay configured this switch is
+   * irrelevant to new top-ups: they are verified, so they are always allowed.
    */
   allowUnverifiedTopUps: process.env.ALLOW_UNVERIFIED_TOPUPS === 'true',
+
+  /**
+   * Razorpay — the gateway behind a wallet top-up (services/razorpay.service.js).
+   *
+   * Test vs live is only which keys are here: `rzp_test_…` keys take test
+   * cards and test UPI ids and move no real money, `rzp_live_…` keys do. There
+   * is no code switch between the two.
+   *
+   * These are the plain environment values, and the FALLBACK: Razorpay saved
+   * and enabled on the admin panel (Settings → Third parties → Razorpay, kept
+   * as INTEGRATION_RAZORPAY_* by services/integrations.service.js) wins over
+   * them. What is actually in force is razorpay.service.js's `getConfig()` —
+   * read that, not this, anywhere a decision is made.
+   *
+   * Getters rather than values captured at boot, on purpose: the panel writes
+   * onto `process.env` while the server is running, and a key that changed
+   * must be the key the very next top-up is signed with.
+   */
+  razorpay: {
+    get keyId() {
+      return (process.env.RAZORPAY_KEY_ID || '').trim();
+    },
+    get keySecret() {
+      return (process.env.RAZORPAY_KEY_SECRET || '').trim();
+    },
+    /** Signs the webhook Razorpay posts to /api/v1/payments/razorpay/webhook — chosen in the Razorpay dashboard, not issued by it. */
+    get webhookSecret() {
+      return (process.env.RAZORPAY_WEBHOOK_SECRET || '').trim();
+    },
+    get enabled() {
+      return Boolean(this.keyId && this.keySecret);
+    },
+    get testMode() {
+      return this.keyId.startsWith('rzp_test_');
+    },
+  },
 
   /**
    * Agora RTC — the audio behind a `call` consultation
@@ -375,6 +410,26 @@ if (env.isProduction && env.allowUnverifiedTopUps) {
   console.warn(
     '[env] WARNING: ALLOW_UNVERIFIED_TOPUPS is on — wallet top-ups complete with no payment gateway ' +
       'behind them, so anyone signed in can credit their own wallet for free. Wire a gateway and unset it.',
+  );
+}
+
+/**
+ * Razorpay TEST keys in production: every top-up "paid" with a test card or
+ * `success@razorpay` credits a real wallet, and that balance is spent on
+ * consultations that pay astrologers real rupees. Fine while the flow is being
+ * proven end to end, and exactly as worth saying on every start as the
+ * unverified path above. Only what the process can see at boot — keys saved on
+ * the panel later are reported by GET /settings (`payments.testMode`).
+ */
+if (
+  env.isProduction &&
+  (env.razorpay.testMode ||
+    (process.env.INTEGRATION_RAZORPAY_ENABLED === 'true' &&
+      (process.env.INTEGRATION_RAZORPAY_KEY_ID || '').startsWith('rzp_test_')))
+) {
+  console.warn(
+    '[env] WARNING: Razorpay is running on TEST keys in production — test cards and test UPI ids credit ' +
+      'real wallets without any money being paid. Swap in the live keys before taking real customers.',
   );
 }
 

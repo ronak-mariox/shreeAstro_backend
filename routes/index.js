@@ -10,7 +10,9 @@
  *   /astrologer     astro_app   what one astrologer manages about themselves
  *   /chats          both apps   consultations
  *   /wallet         both apps   money in and money out
+ *   /payments       Razorpay    the gateway's webhook (signed by Razorpay, no account token)
  *   /notifications  both apps   alerts
+ *   /devices        both apps   where push notifications are sent (FCM tokens)
  *   /admin          admin_panel everything else
  *   /settings       all         limits, feature switches, app versions
  *   /horoscope      user_app    today's reading and the planet positions
@@ -31,7 +33,9 @@ const userRoutes = require('./user.routes');
 const { directoryRouter, selfRouter } = require('./astrologer.routes');
 const chatRoutes = require('./chat.routes');
 const walletRoutes = require('./wallet.routes');
+const paymentRoutes = require('./payment.routes');
 const notificationRoutes = require('./notification.routes');
+const deviceRoutes = require('./device.routes');
 const adminRoutes = require('./admin.routes');
 const publicRoutes = require('./public.routes');
 const kundliRoutes = require('./kundli.routes');
@@ -48,7 +52,9 @@ router.use('/astrologers', directoryRouter);
 router.use('/astrologer', selfRouter);
 router.use('/chats', chatRoutes);
 router.use('/wallet', walletRoutes);
+router.use('/payments', paymentRoutes);
 router.use('/notifications', notificationRoutes);
+router.use('/devices', deviceRoutes);
 router.use('/admin', adminRoutes);
 router.use('/internal', internalRoutes);
 

@@ -8,6 +8,7 @@
 const express = require('express');
 
 const walletController = require('../controllers/wallet.controller');
+const walletValidator = require('../validators/wallet.validator');
 const { authenticate, authorize } = require('../middlewares/auth.middleware');
 
 const router = express.Router();
@@ -17,9 +18,15 @@ router.use(authenticate, authorize('user', 'astrologer'));
 router.get('/', walletController.getWallet);
 router.get('/transactions', walletController.listTransactions);
 
-/** Seekers add money. */
+/**
+ * Seekers add money: start (opens a Razorpay order when the gateway is
+ * configured), then confirm with what the checkout returned — or cancel when
+ * it was dismissed or the payment failed. Razorpay also reports the outcome
+ * itself, to the webhook in routes/payment.routes.js.
+ */
 router.post('/topup', authorize('user'), walletController.startTopUp);
-router.post('/topup/confirm', authorize('user'), walletController.confirmTopUp);
+router.post('/topup/confirm', authorize('user'), walletValidator.confirmTopUp, walletController.confirmTopUp);
+router.post('/topup/cancel', authorize('user'), walletValidator.cancelTopUp, walletController.cancelTopUp);
 
 /** Astrologers take it out. */
 router.get('/withdrawals', authorize('astrologer'), walletController.listWithdrawals);

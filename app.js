@@ -32,7 +32,22 @@ function createApp() {
       credentials: true,
     }),
   );
-  app.use(express.json({ limit: '1mb' }));
+  app.use(
+    express.json({
+      limit: '1mb',
+      /**
+       * A payment webhook is signed over the body exactly as it was sent, and
+       * the parsed JSON written back out need not be the same bytes — so the
+       * bytes are kept for the routes that verify one (routes/payment.routes.js)
+       * and for nothing else.
+       */
+      verify: (req, res, buffer) => {
+        if (req.originalUrl.startsWith('/api/v1/payments/')) {
+          req.rawBody = buffer;
+        }
+      },
+    }),
+  );
   app.use(express.urlencoded({ extended: true }));
 
   /**
