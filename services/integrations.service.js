@@ -1,7 +1,8 @@
 /**
  * Third-party credentials: what the panel's Third Parties tab reads and
  * writes, and what each integration (email, sms, s3, push, appleAuth,
- * googleAuth services) reads to know whether it has something to work with.
+ * googleAuth, razorpay services) reads to know whether it has something to
+ * work with.
  *
  * Backed by the `.env` file (see utils/envFile.js), not a database row — a
  * save writes straight into it and onto `process.env`, so it takes effect on
@@ -55,6 +56,18 @@ const PROVIDER_FIELDS = {
     { key: 'projectId', secret: false },
     { key: 'clientEmail', secret: false },
     { key: 'privateKey', secret: true },
+  ],
+  /**
+   * The payment gateway behind wallet top-ups (services/razorpay.service.js,
+   * which resolves these on every call — a save here governs the very next
+   * top-up). The key id is public: the checkout in the apps is opened with
+   * it. The key secret signs payments and the webhook secret signs the
+   * webhook Razorpay posts back; neither ever leaves the server.
+   */
+  razorpay: [
+    { key: 'keyId', secret: false },
+    { key: 'keySecret', secret: true },
+    { key: 'webhookSecret', secret: true },
   ],
 };
 

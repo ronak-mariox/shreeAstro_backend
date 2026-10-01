@@ -15,6 +15,7 @@ const Settings = require('../models/Settings');
 const ApiError = require('../utils/ApiError');
 const env = require('../config/env');
 const { mergePackageDiscounts } = require('../config/packages');
+const razorpayService = require('./razorpay.service');
 
 /** How long a cached copy is trusted, in milliseconds. */
 const CACHE_MS = 10000;
@@ -134,6 +135,7 @@ async function update(changes, admin) {
  */
 async function publicSettings() {
   const settings = await get();
+  const gateway = await razorpayService.getConfig();
 
   return {
     minRecharge: settings.minRecharge,
@@ -172,6 +174,17 @@ async function publicSettings() {
       provider: 'agora',
       enabled: env.agora.enabled,
     },
+    /**
+     * How a wallet top-up is paid for on this server, so the apps can say so
+     * before the seeker reaches the pay button. `gateway: 'none'` is the
+     * gateway-less development flow (and, in production, means recharge is
+     * unavailable). `testMode` is Razorpay's test keys — no real money moves.
+     * The key id is public (the checkout is opened with it); the secrets are
+     * never here.
+     */
+    payments: gateway.enabled
+      ? { gateway: 'razorpay', enabled: true, testMode: gateway.testMode, keyId: gateway.keyId }
+      : { gateway: 'none', enabled: false, testMode: false },
   };
 }
 

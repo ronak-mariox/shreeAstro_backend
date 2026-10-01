@@ -65,10 +65,23 @@ const emit = (socket, event, payload) =>
   await Promise.all([once(userSocket, 'connect'), once(astroSocket, 'connect')]);
   check('both sides connect with a valid token', userSocket.connected && astroSocket.connected);
 
-  // An astrologer holding a socket is what "online" means.
+  // "Online" is the astrologer's own toggle — a socket coming or going only notes when the app was last seen.
   await new Promise(r => setTimeout(r, 200));
   const presence = await Astrologer.findById(astrologer._id).select('presence');
-  check('connecting marks the astrologer online', presence.presence.isOnline === true);
+  check('connecting leaves availability as the astrologer set it', presence.presence.isOnline === true);
+  check('connecting notes when the app was last seen', presence.presence.lastSeenAt instanceof Date);
+  const switchedOff = await Astrologer.create({
+    name: 'Pt. Off', email: 'off-astro@x.com', phone: { number: '9100000077' },
+    applicationStatus: 'approved', status: 'active',
+    presence: { isOnline: false },
+  });
+  const offTokens = await authService.issueTokens(switchedOff._id, 'astrologer');
+  const offSocket = ioClient(url, { auth: { token: offTokens.accessToken }, transports: ['websocket'] });
+  await once(offSocket, 'connect');
+  await new Promise(r => setTimeout(r, 200));
+  const stillOff = await Astrologer.findById(switchedOff._id).select('presence');
+  check('opening the app while switched off does not put them online', stillOff.presence.isOnline === false, stillOff.presence);
+  offSocket.close();
 
   console.log('\n=== the incoming request reaches the astrologer live ===');
   const incoming = once(astroSocket, 'chat:requested');
@@ -152,8 +165,8 @@ const emit = (socket, event, payload) =>
   console.log('\n=== disconnect ===');
   astroSocket.close();
   await new Promise(r => setTimeout(r, 400));
-  const offline = await Astrologer.findById(astrologer._id).select('presence');
-  check('disconnecting marks the astrologer offline', offline.presence.isOnline === false, offline.presence);
+  const afterClose = await Astrologer.findById(astrologer._id).select('presence');
+  check('closing the app leaves the astrologer online until they switch off themselves', afterClose.presence.isOnline === true, afterClose.presence);
 
   console.log(`\n${pass} passed, ${fail} failed`);
 

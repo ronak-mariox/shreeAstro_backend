@@ -191,7 +191,7 @@ router.patch(
   adminController.setIntegrationEnabled,
 );
 
-/** The "Other" list — anything not one of the six fixed providers above. */
+/** The "Other" list — anything not one of the fixed providers above. */
 router.get('/third-parties', requirePermission('settings.view'), adminController.listThirdParties);
 router.post('/third-parties', requirePermission('settings.manage'), adminController.saveThirdParty);
 router.put(

@@ -320,13 +320,30 @@ const refresh = asyncHandler(async (req, res) => {
  * unreadable is not an error here: there is nothing left to revoke either way.
  */
 const logout = asyncHandler(async (req, res) => {
+  /** Whoever is signing out — from the refresh token when one is sent, else the access token (the apps send only that). */
+  let leaving = req.account ? { role: req.account.role, accountId: req.account.accountId } : null;
+
   const token = refreshTokenFrom(req);
   if (token) {
     try {
       const claims = verifyRefreshToken(token);
       await refreshTokenService.revoke(claims);
+      leaving = { role: claims.role, accountId: claims.accountId };
     } catch (error) {
       /** Already invalid or expired — nothing to revoke. */
+    }
+  }
+
+  /**
+   * Availability survives the app closing, so signing out has to end it
+   * explicitly: a signed-out astrologer has no session and no push token, and
+   * must not sit in the directory as "Online" for seekers to wait on.
+   */
+  if (leaving?.role === 'astrologer' && leaving.accountId) {
+    try {
+      await require('../services/presence.service').setAstrologerOnline(leaving.accountId, false);
+    } catch (error) {
+      console.error('[auth] logout presence:', error.message);
     }
   }
 

@@ -96,6 +96,11 @@ const walletTransactionSchema = new Schema(
 /** The ledger screens: one owner's rows, newest first. */
 walletTransactionSchema.index({ owner: 1, createdAt: -1 });
 walletTransactionSchema.index({ type: 1, createdAt: -1 });
+/**
+ * A payment webhook only knows the gateway's order id, so that is how it finds
+ * its top-up. Sparse: only top-up rows carry one.
+ */
+walletTransactionSchema.index({ 'payment.orderId': 1 }, { sparse: true });
 
 /** Gives every row a reference before it is saved. */
 walletTransactionSchema.pre('validate', function setReference() {

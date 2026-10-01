@@ -1,6 +1,6 @@
 /**
  * A third-party service noted for reference in the admin panel (Settings →
- * Third Parties → "Other third parties") — anything outside the six fixed,
+ * Third Parties → "Other third parties") — anything outside the fixed,
  * live-wired providers in services/integrations.service.js. This is a plain
  * record, not a working credential store: nothing here is used to actually
  * call the named service, unlike the fixed providers' .env-backed fields.

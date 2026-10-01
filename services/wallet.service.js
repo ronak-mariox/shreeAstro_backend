@@ -21,6 +21,7 @@ const ApiError = require('../utils/ApiError');
 const { istDateString, startOfIstDay } = require('../utils/istDate');
 const settingsService = require('./settings.service');
 const notificationService = require('./notification.service');
+const razorpayService = require('./razorpay.service');
 
 /**
  * Fallbacks only.
@@ -242,39 +243,86 @@ async function listTransactions({ ownerRole, ownerId, filter = 'all', page = 1, 
   return { items, total, page: Number(page), limit };
 }
 
+/** What a seeker is told when no top-up can be taken at all. */
+function paymentsUnavailable() {
+  return new ApiError(
+    503,
+    'Online recharge is temporarily unavailable. Please contact support to add money.',
+    undefined,
+    'payments_unavailable',
+  );
+}
+
 /**
  * Refuses a top-up that nothing would verify, where that matters.
  *
- * With no gateway wired up, start + confirm credit a wallet on the word of
+ * With no gateway behind it, start + confirm credit a wallet on the word of
  * whoever asked. In development that is the point. In production it is free
  * money — and it is spent on consultations that pay astrologers real rupees —
  * so it is closed there unless ALLOW_UNVERIFIED_TOPUPS explicitly opens it.
  *
  * Deliberately not a silent no-op: the seeker is told recharge is unavailable,
  * and an admin can still credit the wallet by hand for money collected another
- * way (POST /admin/wallets/adjust). Delete this when a gateway verifies a
- * payment between the two calls.
+ * way (POST /admin/wallets/adjust).
  */
-function assertTopUpsAllowed() {
+function assertUnverifiedTopUpsAllowed() {
   if (env.isProduction && !env.allowUnverifiedTopUps) {
-    throw new ApiError(
-      503,
-      'Online recharge is temporarily unavailable. Please contact support to add money.',
-      undefined,
-      'payments_unavailable',
-    );
+    throw paymentsUnavailable();
   }
+}
+
+/**
+ * May a top-up be started at all, and through what?
+ *
+ * With Razorpay configured, always: the payment is verified before anything is
+ * credited, so there is nothing to guard. Without it, the unverified rule
+ * above decides. Hands back the gateway config it looked at, so the caller
+ * acts on the same answer it was allowed by.
+ */
+async function assertTopUpsAllowed() {
+  const gateway = await razorpayService.getConfig();
+  if (!gateway.enabled) {
+    assertUnverifiedTopUpsAllowed();
+  }
+  return gateway;
+}
+
+/** Why a top-up did not complete, kept short enough to sit in a ledger row. */
+function failureReasonOf(value, fallback) {
+  return String(value || fallback).trim().slice(0, 200) || fallback;
+}
+
+/** What Razorpay's checkout pre-fills — only what the account actually has. */
+async function checkoutPrefillFor(userId) {
+  const user = await User.findById(userId).select('name email phone');
+  const prefill = {};
+  if (user?.name) {
+    prefill.name = user.name;
+  }
+  if (user?.phone?.number) {
+    prefill.contact = `${user.phone.countryCode || ''}${user.phone.number}`;
+  }
+  if (user?.email) {
+    prefill.email = user.email;
+  }
+  return prefill;
 }
 
 /**
  * Starts a top-up.
  *
- * There is no payment gateway wired up yet, so this creates the row as
- * `pending` and hands back an order the app can "pay". When Razorpay (or
- * whichever) lands, create the gateway order here and return its id.
+ * Opens the row as `pending` — no money has moved — and, with Razorpay
+ * configured, opens a Razorpay order for the same amount that the app's
+ * checkout then pays against. The row remembers that order's id; it is how a
+ * payment is later matched back to exactly this top-up, whether the news
+ * arrives from the app (confirmTopUp) or from Razorpay itself (the webhook).
+ *
+ * Without Razorpay this is the old gateway-less flow: `gateway: 'none'`, and
+ * the app confirms straight away (development only — see
+ * assertUnverifiedTopUpsAllowed).
  */
 async function startTopUp({ userId, amount, couponCode }) {
-  assertTopUpsAllowed();
+  const gateway = await assertTopUpsAllowed();
 
   const rupees = Math.round(Number(amount));
   const settings = await settingsService.get();
@@ -294,7 +342,7 @@ async function startTopUp({ userId, amount, couponCode }) {
    * A coupon on a top-up is a bonus, not a discount: the seeker pays the full
    * amount and the coupon's worth is credited on top once the payment is
    * confirmed. Checked here so a bad code is refused before anything is
-   * opened; redeemed in confirmTopUp, when the money actually lands.
+   * opened; redeemed when the money actually lands (settleTopUp).
    */
   let bonus = null;
   if (couponCode) {
@@ -316,22 +364,69 @@ async function startTopUp({ userId, amount, couponCode }) {
     amount: rupees,
     status: 'pending',
     title: 'Money added to wallet',
-    payment: { gateway: 'none', orderId: `ORD-${Date.now()}` },
+    payment: gateway.enabled
+      ? { gateway: 'razorpay' }
+      : { gateway: 'none', orderId: `ORD-${Date.now()}` },
   });
   if (bonus) {
     transaction.coupon = bonus;
     await transaction.save();
   }
 
-  return {
+  const started = {
     transactionId: String(transaction._id),
     reference: transaction.reference,
     orderId: transaction.payment.orderId,
+    /** Rupees. The paise Razorpay's checkout wants are under `razorpay.amount`. */
     amount: rupees,
     couponCode: bonus ? bonus.code : null,
     bonusAmount: bonus ? bonus.bonusAmount : 0,
-    /** No gateway yet — the app calls confirmTopUp straight away. */
-    gateway: 'none',
+  };
+
+  if (!gateway.enabled) {
+    /** No gateway — the app calls confirmTopUp straight away. */
+    return { ...started, gateway: 'none' };
+  }
+
+  /** Razorpay counts in paise. */
+  const amountPaise = rupees * 100;
+  let order;
+  try {
+    order = await razorpayService.createOrder({
+      amountPaise,
+      /** Our own reference, so the order can be found from the Razorpay dashboard. */
+      receipt: transaction.reference,
+      notes: { transactionId: String(transaction._id), userId: String(userId) },
+    });
+    if (order.amount !== amountPaise) {
+      throw new ApiError(502, 'The payment gateway opened an order for a different amount.', undefined, 'payment_gateway_error');
+    }
+  } catch (error) {
+    /** Nothing can ever pay against this row now, so it must not sit there looking payable. */
+    await WalletTransaction.updateOne(
+      { _id: transaction._id, status: 'pending' },
+      { $set: { status: 'failed', 'payment.failureReason': failureReasonOf(error.message, 'Could not open a payment order.') } },
+    );
+    throw error;
+  }
+
+  transaction.payment.orderId = order.id;
+  await transaction.save();
+
+  return {
+    ...started,
+    orderId: order.id,
+    gateway: 'razorpay',
+    /** Everything the app's checkout needs. The key id is public; the secret never leaves the server. */
+    razorpay: {
+      keyId: gateway.keyId,
+      orderId: order.id,
+      amount: order.amount,
+      currency: order.currency || 'INR',
+      name: 'Shree Astro',
+      description: 'Wallet top-up',
+      prefill: await checkoutPrefillFor(userId),
+    },
   };
 }
 
@@ -389,14 +484,195 @@ async function creditTopUpBonus(transaction) {
 }
 
 /**
- * Finishes a top-up: marks the pending row successful and credits the wallet.
+ * The one place a top-up turns into money in a wallet.
  *
- * When a real gateway is added, verify its signature before calling this.
+ * Two things can report the same payment — the app's confirm and Razorpay's
+ * webhook — and they can arrive together, in either order. So the row is
+ * claimed with a single conditional update: whoever flips it to `success` is
+ * the one that credits, and everyone after finds it already successful and
+ * credits nothing. `credited` says which of the two this caller was.
+ *
+ * The claim, the wallet credit and the row's `balanceAfter` live in one
+ * transaction, so a crash between them cannot leave a top-up marked paid that
+ * never reached the wallet.
+ *
+ * `from` is which states may be claimed. A gateway-less row only from
+ * `pending`. A Razorpay row from `failed` too — see RAZORPAY_SETTLEABLE.
  */
-async function confirmTopUp({ userId, transactionId, paymentId, method }) {
-  /** Again here, not only in startTopUp: a row opened earlier must not become creditable later. */
-  assertTopUpsAllowed();
+async function settleTopUp({ transactionId, from, paymentId, method }) {
+  const set = { status: 'success' };
+  if (paymentId) {
+    set['payment.paymentId'] = paymentId;
+  }
+  if (method) {
+    set['payment.method'] = method;
+  }
 
+  let credited = false;
+  const session = await mongoose.startSession();
+  try {
+    await session.withTransaction(async () => {
+      /** withTransaction re-runs this whole function when two claims collide; start each attempt clean. */
+      credited = false;
+
+      const claimed = await WalletTransaction.findOneAndUpdate(
+        { _id: transactionId, type: 'topup', status: { $in: from } },
+        { $set: set, $unset: { 'payment.failureReason': '' } },
+        { session, returnDocument: 'after' },
+      );
+      if (!claimed) {
+        return;
+      }
+
+      const user = await User.findOneAndUpdate(
+        { _id: claimed.owner },
+        {
+          $inc: { 'wallet.balance': claimed.amount, 'wallet.totalAdded': claimed.amount },
+          $set: { 'wallet.lastTransactionAt': new Date() },
+        },
+        { session, returnDocument: 'after' },
+      );
+      if (!user) {
+        /** Aborts the claim with it — a payment for an account that is gone stays unsettled for a person to look at. */
+        throw ApiError.notFound('Account not found.');
+      }
+
+      await WalletTransaction.updateOne(
+        { _id: claimed._id },
+        { $set: { balanceAfter: user.wallet.balance } },
+        { session },
+      );
+      credited = true;
+    });
+  } finally {
+    await session.endSession();
+  }
+
+  const transaction = await WalletTransaction.findById(transactionId);
+  if (credited) {
+    await creditTopUpBonus(transaction);
+  }
+  return { transaction, credited };
+}
+
+/**
+ * A Razorpay top-up can still be settled after it was marked `failed`.
+ *
+ * `failed` only ever means "we were told it did not go through" — the seeker
+ * closed the checkout (cancelTopUp), or one attempt was declined
+ * (`payment.failed`). Neither is the last word: a UPI request approved a few
+ * seconds after the checkout was dismissed, or a second attempt on the same
+ * order after a declined card, is money actually taken. When Razorpay then
+ * proves a captured payment for this order, the wallet is owed it.
+ *
+ * `success` is final either way — that is what keeps it exactly-once.
+ */
+const RAZORPAY_SETTLEABLE = ['pending', 'failed'];
+
+function signatureInvalid(fields) {
+  return ApiError.badRequest('That payment could not be verified.', fields, 'payment_signature_invalid');
+}
+
+function notCaptured() {
+  return ApiError.badRequest(
+    'That payment has not gone through. If money was deducted, it will reach your wallet shortly or be refunded by your bank.',
+    undefined,
+    'payment_not_captured',
+  );
+}
+
+/**
+ * Finishes a Razorpay top-up on the app's say-so — which is worth nothing by
+ * itself, so every claim it makes is checked:
+ *
+ *   1. the order id is this row's own (a signature for someone else's order,
+ *      or for a cheaper one, is a valid signature for the wrong thing);
+ *   2. the signature is Razorpay's, over exactly that order and payment;
+ *   3. Razorpay itself, asked directly, says the payment is for this order,
+ *      for the full amount, and captured — i.e. the money was really taken.
+ */
+async function confirmRazorpayTopUp(transaction, { razorpayPaymentId, razorpayOrderId, razorpaySignature }) {
+  /** Already done (this app, another tab, or the webhook got here first) — say so rather than crediting twice. */
+  if (transaction.status === 'success') {
+    return transaction;
+  }
+  if (!RAZORPAY_SETTLEABLE.includes(transaction.status)) {
+    throw ApiError.badRequest('That payment cannot be completed.');
+  }
+
+  /** Keys removed since the order was opened: nothing can be verified, so nothing is credited. */
+  const gateway = await razorpayService.getConfig();
+  if (!gateway.enabled) {
+    throw paymentsUnavailable();
+  }
+
+  const missing = {};
+  if (!razorpayPaymentId) missing.razorpayPaymentId = 'Required.';
+  if (!razorpayOrderId) missing.razorpayOrderId = 'Required.';
+  if (!razorpaySignature) missing.razorpaySignature = 'Required.';
+  if (Object.keys(missing).length) {
+    throw signatureInvalid(missing);
+  }
+
+  const orderId = transaction.payment.orderId;
+  if (!orderId || razorpayOrderId !== orderId) {
+    throw signatureInvalid();
+  }
+  const genuine = await razorpayService.verifyPaymentSignature({
+    orderId,
+    paymentId: razorpayPaymentId,
+    signature: razorpaySignature,
+  });
+  if (!genuine) {
+    throw signatureInvalid();
+  }
+
+  const amountPaise = transaction.amount * 100;
+  let payment = await razorpayService.fetchPayment(razorpayPaymentId);
+  if (payment?.order_id !== orderId || payment.amount !== amountPaise || (payment.currency || 'INR') !== 'INR') {
+    throw notCaptured();
+  }
+
+  if (payment.status === 'authorized') {
+    try {
+      payment = await razorpayService.capturePayment(razorpayPaymentId, { amountPaise, currency: 'INR' });
+    } catch (error) {
+      /** Razorpay's own auto-capture can win this by a moment and refuse ours; what matters is where the payment ended up. */
+      payment = await razorpayService.fetchPayment(razorpayPaymentId);
+    }
+  }
+  if (payment?.status !== 'captured') {
+    throw notCaptured();
+  }
+
+  const { transaction: settled } = await settleTopUp({
+    transactionId: transaction._id,
+    from: RAZORPAY_SETTLEABLE,
+    paymentId: razorpayPaymentId,
+    /** Razorpay's own word for how it was paid: upi, card, netbanking, wallet. */
+    method: payment.method,
+  });
+  return settled;
+}
+
+/**
+ * Finishes a top-up: marks the row successful and credits the wallet.
+ *
+ * A Razorpay row is credited only on a verified payment (confirmRazorpayTopUp).
+ * A gateway-less row is credited on the caller's word, which is why that path
+ * is only open where assertUnverifiedTopUpsAllowed lets it be — and stays
+ * closed in production even with Razorpay configured, so an old unverified row
+ * can never be cashed in later.
+ */
+async function confirmTopUp({
+  userId,
+  transactionId,
+  paymentId,
+  method,
+  razorpayPaymentId,
+  razorpayOrderId,
+  razorpaySignature,
+}) {
   const transaction = await WalletTransaction.findOne({
     _id: transactionId,
     owner: userId,
@@ -406,6 +682,14 @@ async function confirmTopUp({ userId, transactionId, paymentId, method }) {
   if (!transaction) {
     throw ApiError.notFound('That payment was not found.');
   }
+
+  if (transaction.payment?.gateway === 'razorpay') {
+    return confirmRazorpayTopUp(transaction, { razorpayPaymentId, razorpayOrderId, razorpaySignature });
+  }
+
+  /** Again here, not only in startTopUp: a row opened earlier must not become creditable later. */
+  assertUnverifiedTopUpsAllowed();
+
   /** Already done — say so rather than crediting the wallet twice. */
   if (transaction.status === 'success') {
     return transaction;
@@ -414,32 +698,130 @@ async function confirmTopUp({ userId, transactionId, paymentId, method }) {
     throw ApiError.badRequest('That payment cannot be completed.');
   }
 
-  const user = await User.findByIdAndUpdate(
-    userId,
-    {
-      $inc: {
-        'wallet.balance': transaction.amount,
-        'wallet.totalAdded': transaction.amount,
-      },
-      $set: { 'wallet.lastTransactionAt': new Date() },
-    },
+  /** `method` is cosmetic here (no gateway to report one back), but the app already asks. */
+  const { transaction: settled } = await settleTopUp({
+    transactionId: transaction._id,
+    from: ['pending'],
+    paymentId,
+    method,
+  });
+  if (settled.status !== 'success') {
+    throw ApiError.badRequest('That payment cannot be completed.');
+  }
+  return settled;
+}
+
+/**
+ * The seeker backed out, or the payment failed in the checkout.
+ *
+ * Marks a `pending` row `failed` with the reason, so it stops looking like a
+ * payment in progress. Safe to call any number of times and for anything: a
+ * row that is already final is handed back untouched — above all a `success`
+ * one — and a row that is not this seeker's is simply not found (`null`). The
+ * apps call this best-effort on the way out of the checkout, so it does not
+ * raise.
+ *
+ * `failed` here is not final for a Razorpay row — see RAZORPAY_SETTLEABLE.
+ *
+ * @returns {Promise<{ transaction: object|null, cancelled: boolean }>}
+ */
+async function cancelTopUp({ userId, transactionId, reason }) {
+  const own = { _id: transactionId, owner: userId, type: 'topup' };
+
+  const cancelled = await WalletTransaction.findOneAndUpdate(
+    { ...own, status: 'pending' },
+    { $set: { status: 'failed', 'payment.failureReason': failureReasonOf(reason, 'Payment cancelled.') } },
     { returnDocument: 'after' },
   );
-
-  transaction.status = 'success';
-  transaction.balanceAfter = user.wallet.balance;
-  if (paymentId) {
-    transaction.payment.paymentId = paymentId;
+  if (cancelled) {
+    return { transaction: cancelled, cancelled: true };
   }
-  /** Cosmetic today (no gateway to report a method back), but the app already asks. */
-  if (method) {
-    transaction.payment.method = method;
+  return { transaction: await WalletTransaction.findOne(own), cancelled: false };
+}
+
+/** The Razorpay webhook events that say something about a top-up. */
+const RAZORPAY_PAID_EVENTS = ['payment.captured', 'order.paid'];
+const RAZORPAY_FAILED_EVENT = 'payment.failed';
+
+/**
+ * Acts on one (already signature-verified) Razorpay webhook event.
+ *
+ * This is the path that does not depend on the seeker's phone: the app can be
+ * killed mid-payment, lose its connection, or have its checkout dismissed
+ * while the UPI app is still open — Razorpay still tells the server what
+ * happened to the money.
+ *
+ *   payment.captured / order.paid  the top-up for that order is credited,
+ *                                  through the same exactly-once path as the
+ *                                  app's confirm;
+ *   payment.failed                 a pending top-up is marked failed.
+ *
+ * Anything else — an event not listed, an order that is not one of ours, an
+ * amount that is not the row's — is `ignored`, never an error: Razorpay
+ * retries whatever is not answered 200, and none of those get better on retry.
+ *
+ * @returns {Promise<{ ignored: boolean, credited?: boolean, userId?: string, status?: string, reason?: string }>}
+ */
+async function applyRazorpayEvent(event) {
+  const name = event?.event;
+  const payment = event?.payload?.payment?.entity;
+  const order = event?.payload?.order?.entity;
+  const orderId = payment?.order_id || order?.id;
+
+  const isPaid = RAZORPAY_PAID_EVENTS.includes(name);
+  if ((!isPaid && name !== RAZORPAY_FAILED_EVENT) || typeof orderId !== 'string' || !orderId) {
+    return { ignored: true, reason: 'not_relevant' };
   }
-  await transaction.save();
 
-  await creditTopUpBonus(transaction);
+  const transaction = await WalletTransaction.findOne({
+    type: 'topup',
+    ownerRole: 'user',
+    'payment.gateway': 'razorpay',
+    'payment.orderId': orderId,
+  });
+  if (!transaction) {
+    return { ignored: true, reason: 'unknown_order' };
+  }
 
-  return transaction;
+  if (!isPaid) {
+    /** Only a row still waiting: one that was paid, or already closed with its own reason, is left as it is. */
+    const failed = await WalletTransaction.findOneAndUpdate(
+      { _id: transaction._id, status: 'pending' },
+      {
+        $set: {
+          status: 'failed',
+          'payment.failureReason': failureReasonOf(
+            payment?.error_description || payment?.error_reason,
+            'Payment failed.',
+          ),
+        },
+      },
+      { returnDocument: 'after' },
+    );
+    return { ignored: false, credited: false, status: (failed || transaction).status };
+  }
+
+  const paidPaise = payment ? payment.amount : order?.amount_paid;
+  const currency = payment?.currency || order?.currency || 'INR';
+  if (paidPaise !== transaction.amount * 100 || currency !== 'INR') {
+    console.warn(
+      `[razorpay] ${name} for ${orderId} does not match top-up ${transaction.reference} ` +
+        `(paid ${paidPaise} paise ${currency}, expected ${transaction.amount * 100} paise INR) — not credited.`,
+    );
+    return { ignored: true, reason: 'amount_mismatch' };
+  }
+  /** `order.paid` and `payment.captured` both carry a captured payment; anything else is not money taken yet. */
+  if (payment?.status && payment.status !== 'captured') {
+    return { ignored: true, reason: 'not_captured' };
+  }
+
+  const { transaction: settled, credited } = await settleTopUp({
+    transactionId: transaction._id,
+    from: RAZORPAY_SETTLEABLE,
+    paymentId: payment?.id,
+    method: payment?.method,
+  });
+  return { ignored: false, credited, userId: String(transaction.owner), status: settled.status };
 }
 
 /* -------------------------------------------------------------------------- */
@@ -558,6 +940,8 @@ module.exports = {
   listTransactions,
   startTopUp,
   confirmTopUp,
+  cancelTopUp,
+  applyRazorpayEvent,
   MIN_TOPUP,
   MAX_TOPUP,
   MIN_WITHDRAWAL,

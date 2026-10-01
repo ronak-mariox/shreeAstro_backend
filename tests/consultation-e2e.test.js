@@ -14,6 +14,10 @@ process.env.MONGODB_URI =
   process.env.TEST_MONGODB_URI || 'mongodb://127.0.0.1:27017/shree_astro_test_consultation_e2e';
 process.env.REDIS_KEY_PREFIX = 'shreeastro-test:';
 process.env.NODE_ENV = 'development';
+/** This suite walks the gateway-less top-up; pinned so keys in a developer's .env can never send it to Razorpay. */
+process.env.RAZORPAY_KEY_ID = '';
+process.env.RAZORPAY_KEY_SECRET = '';
+process.env.INTEGRATION_RAZORPAY_ENABLED = 'false';
 
 const http = require('http');
 const mongoose = require('mongoose');
@@ -116,7 +120,8 @@ function headerSeconds(state, deviceNowMs, deviceSkewMs) {
       name: `Pt. Astro ${seq}`, email: `e2e-astro${seq}@x.com`, phone: { number: `91000000${String(seq).padStart(2, '0')}` },
       applicationStatus: 'approved', status: 'active', commissionPercent,
       services: [{ type: 'chat', isEnabled: true, ratePerMinute: chatRate }, { type: 'call', isEnabled: true, ratePerMinute: 30 }],
-      presence: { isOnline: false, maxConcurrentChats: 3 },
+      /** Online is the astrologer's own toggle now (a socket no longer sets it), so the fixture starts switched on. */
+      presence: { isOnline: true, maxConcurrentChats: 3 },
     });
     const userToken = (await authService.issueTokens(user._id, 'user')).accessToken;
     const astroToken = (await authService.issueTokens(astrologer._id, 'astrologer')).accessToken;

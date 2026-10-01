@@ -3,9 +3,10 @@
  *
  * Three things happen when a notification is created: a row is stored (so
  * the list screen can show it later), it is pushed straight to any open
- * socket, and it is sent to every device that has registered an FCM token —
- * the last of those only when Firebase is configured on the Third Parties
- * tab; unconfigured, nothing here changes from before it existed.
+ * socket, and it is sent to every device that has registered an FCM token
+ * (services/device.service.js) — the last of those only when Firebase is
+ * configured on the Third Parties tab; unconfigured, nothing is sent and
+ * nothing fails.
  */
 
 const User = require('../models/User');
@@ -13,6 +14,7 @@ const Astrologer = require('../models/Astrologer');
 const Admin = require('../models/Admin');
 const Notification = require('../models/Notification');
 const pushService = require('./push.service');
+const deviceService = require('./device.service');
 
 /** Which model holds the unread counter for each role. */
 const OWNER_MODELS = { user: User, astrologer: Astrologer, admin: Admin };
@@ -33,28 +35,85 @@ function pushToSocket(ownerRole, ownerId, notification) {
 }
 
 /**
- * Pushes to every device the account has registered. Not awaited by
- * `notify()` — a slow or unconfigured Firebase must not hold up the request
- * that triggered the notification.
+ * What a push carries besides its title and body — what the app needs to act
+ * on a tap. FCM `data` values are strings, so `action` (stored as
+ * `{ screen, id }`) travels as JSON: '{"screen":"wallets"}', or '' when the
+ * notification has nowhere to go. `notificationId` is the row's id, so the
+ * app can mark exactly that one read.
+ */
+function pushData(notification) {
+  const plain = typeof notification.toObject === 'function' ? notification.toObject() : notification;
+  const { action } = plain;
+
+  let actionText = '';
+  if (action && typeof action === 'object') {
+    const entries = Object.entries(action).filter(([, value]) => value !== undefined && value !== null);
+    actionText = entries.length ? JSON.stringify(Object.fromEntries(entries)) : '';
+  } else if (typeof action === 'string') {
+    actionText = action;
+  }
+
+  return {
+    notificationId: String(plain._id ?? plain.id ?? ''),
+    type: plain.type || 'system',
+    action: actionText,
+  };
+}
+
+/**
+ * Pushes to every device the account has registered, and answers with one
+ * `{ sent, reason? }` per device, in order. Not awaited by `notify()` — a slow
+ * or unconfigured Firebase must not hold up the request that triggered the
+ * notification — but POST /devices/test awaits it to show a human why nothing
+ * arrived.
+ *
+ * Two things are settled here rather than by the caller: an account that has
+ * switched push off (`notificationPrefs.push === false`) is sent nothing
+ * (`push_disabled`), and a token FCM reports dead is taken off the account so
+ * it is not tried again.
  */
 async function pushToDevices(ownerRole, ownerId, notification) {
-  const owner = await OWNER_MODELS[ownerRole].findById(ownerId).select('devices');
-  await Promise.all(
-    (owner?.devices || []).map(device =>
-      pushService
-        .sendPush({
+  const owner = await OWNER_MODELS[ownerRole].findById(ownerId).select('devices notificationPrefs');
+  const devices = owner?.devices || [];
+
+  if (owner?.notificationPrefs?.push === false) {
+    return devices.map(() => ({ sent: false, reason: 'push_disabled' }));
+  }
+
+  const data = pushData(notification);
+
+  return Promise.all(
+    devices.map(async device => {
+      let result;
+      try {
+        result = await pushService.sendPush({
           token: device.fcmToken,
           title: notification.title,
           body: notification.body,
-          data: { type: notification.type, action: notification.action || '' },
-        })
-        .catch(() => {}),
-    ),
+          data,
+        });
+      } catch (error) {
+        result = { sent: false, reason: 'provider_error' };
+      }
+
+      if (result?.reason === 'invalid_token') {
+        await deviceService
+          .unregisterDevice({ role: ownerRole, accountId: ownerId, fcmToken: device.fcmToken })
+          .catch(() => {});
+      }
+      return result;
+    }),
   );
 }
 
-/** Creates one notification and pushes it. */
-async function notify({ ownerRole, ownerId, type, title, body, action }) {
+/**
+ * Creates one notification and pushes it.
+ *
+ * `push: false` stores it and emits it on the socket but leaves the device
+ * push to the caller — for the one caller that wants to await
+ * `pushToDevices` itself and report what happened.
+ */
+async function notify({ ownerRole, ownerId, type, title, body, action, push = true }) {
   const notification = await Notification.create({
     ownerRole,
     owner: ownerId,
@@ -78,7 +137,9 @@ async function notify({ ownerRole, ownerId, type, title, body, action }) {
     createdAt: notification.createdAt,
   });
 
-  pushToDevices(ownerRole, ownerId, notification).catch(() => {});
+  if (push) {
+    pushToDevices(ownerRole, ownerId, notification).catch(() => {});
+  }
 
   return notification;
 }
@@ -138,4 +199,4 @@ async function markRead({ ownerRole, ownerId, notificationId }) {
   return { updated: result.modifiedCount, unread: stillUnread };
 }
 
-module.exports = { notify, notifyAdmins, list, markRead };
+module.exports = { notify, notifyAdmins, pushToDevices, list, markRead };

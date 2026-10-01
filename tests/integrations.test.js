@@ -5,6 +5,14 @@
  * — so it proves the actual file gets written and re-read correctly.
  */
 process.env.NODE_ENV = 'development';
+/** Only what this suite saves may count as configured — never a developer's own .env. */
+process.env.RAZORPAY_KEY_ID = '';
+process.env.RAZORPAY_KEY_SECRET = '';
+process.env.RAZORPAY_WEBHOOK_SECRET = '';
+process.env.INTEGRATION_RAZORPAY_ENABLED = 'false';
+process.env.INTEGRATION_RAZORPAY_KEY_ID = '';
+process.env.INTEGRATION_RAZORPAY_KEY_SECRET = '';
+process.env.INTEGRATION_RAZORPAY_WEBHOOK_SECRET = '';
 
 const fs = require('fs');
 const os = require('os');
@@ -86,6 +94,59 @@ const section = t => console.log(`\n=== ${t} ===`);
   const s3Still = await integrations.get('awsS3');
   check('sms got its own values', sms.authKey === 'sms-secret' && sms.senderId === 'SHREE');
   check('awsS3 is untouched by the sms save', s3Still.bucket === 'my-bucket-v2' && s3Still.secretAccessKey === 'shh-dont-tell');
+
+  section('razorpay — the payment gateway is one of the panel\'s providers');
+  const before = (await integrations.list()).find(r => r.provider === 'razorpay');
+  check('list() shows it, disabled and empty, before anything is saved',
+    Boolean(before) && before.enabled === false && before.values.keyId === null && before.values.keySecret === null && before.values.webhookSecret === null, before);
+  check('exactly the three fields the panel sends', Object.keys(before.values).join(',') === 'keyId,keySecret,webhookSecret', Object.keys(before.values));
+  check('get() is null until it is saved', await integrations.get('razorpay') === null);
+
+  const savedRazorpay = await integrations.save('razorpay', {
+    keyId: 'rzp_test_PanelSaved001',
+    keySecret: 'panel-saved-key-secret',
+    webhookSecret: 'panel-saved-webhook-secret',
+  });
+  check('save() enables it', savedRazorpay.provider === 'razorpay' && savedRazorpay.enabled === true);
+  const razorpayFile = fs.readFileSync(ENV_PATH, 'utf8');
+  check('the .env file gets INTEGRATION_RAZORPAY_KEY_ID / _KEY_SECRET / _WEBHOOK_SECRET / _ENABLED',
+    razorpayFile.includes('INTEGRATION_RAZORPAY_KEY_ID=rzp_test_PanelSaved001')
+    && razorpayFile.includes('INTEGRATION_RAZORPAY_KEY_SECRET=panel-saved-key-secret')
+    && razorpayFile.includes('INTEGRATION_RAZORPAY_WEBHOOK_SECRET=panel-saved-webhook-secret')
+    && razorpayFile.includes('INTEGRATION_RAZORPAY_ENABLED=true'));
+
+  const razorpayRow = (await integrations.list()).find(r => r.provider === 'razorpay');
+  check('list(): the key id is shown as-is — it is public', razorpayRow.enabled === true && razorpayRow.values.keyId === 'rzp_test_PanelSaved001');
+  check('list(): the key secret is masked, never in the clear',
+    razorpayRow.values.keySecret !== 'panel-saved-key-secret' && razorpayRow.values.keySecret.includes('*'), razorpayRow.values.keySecret);
+  check('list(): the webhook secret is masked, never in the clear',
+    razorpayRow.values.webhookSecret !== 'panel-saved-webhook-secret' && razorpayRow.values.webhookSecret.includes('*'), razorpayRow.values.webhookSecret);
+  check('nothing list() returns contains either secret',
+    !JSON.stringify(await integrations.list()).includes('panel-saved-key-secret') && !JSON.stringify(await integrations.list()).includes('panel-saved-webhook-secret'));
+
+  const razorpayConfig = await integrations.get('razorpay');
+  check('get() (server-side only) returns the real values',
+    razorpayConfig?.keyId === 'rzp_test_PanelSaved001' && razorpayConfig.keySecret === 'panel-saved-key-secret' && razorpayConfig.webhookSecret === 'panel-saved-webhook-secret');
+
+  /** What actually makes a save matter: the gateway code resolves its credentials on every call. */
+  const razorpayService = require('../services/razorpay.service');
+  const live = await razorpayService.getConfig();
+  check('razorpay.service picks the saved keys up immediately, no restart',
+    live.source === 'integration' && live.enabled === true && live.testMode === true && live.keyId === 'rzp_test_PanelSaved001'
+    && live.keySecret === 'panel-saved-key-secret' && live.webhookSecret === 'panel-saved-webhook-secret');
+
+  await integrations.save('razorpay', { keyId: 'rzp_test_PanelSaved002' });
+  const rotated = await razorpayService.getConfig();
+  check('re-saving only the key id keeps both secrets', rotated.keyId === 'rzp_test_PanelSaved002'
+    && rotated.keySecret === 'panel-saved-key-secret' && rotated.webhookSecret === 'panel-saved-webhook-secret');
+
+  await integrations.setEnabled('razorpay', false);
+  const switchedOff = await razorpayService.getConfig();
+  check('disabling it stops it being the source (no RAZORPAY_* env here, so no gateway at all)',
+    await integrations.get('razorpay') === null && switchedOff.source === 'none' && switchedOff.enabled === false, { source: switchedOff.source });
+  check('but the saved values are still in the file', fs.readFileSync(ENV_PATH, 'utf8').includes('INTEGRATION_RAZORPAY_KEY_SECRET=panel-saved-key-secret'));
+  await integrations.setEnabled('razorpay', true);
+  check('re-enabling brings it straight back', (await razorpayService.getConfig()).source === 'integration');
 
   process.chdir(originalCwd);
   fs.rmSync(scratchDir, { recursive: true, force: true });
