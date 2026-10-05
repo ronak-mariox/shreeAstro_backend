@@ -525,7 +525,7 @@ async function acceptChat({ chatId, astrologerId }) {
    * the seeker is never left waiting on a first line.
    */
   await greetSeeker(chat, astrologerId);
-
+  
   await notificationService.notify({
     ownerRole: 'user',
     ownerId: chat.user,
