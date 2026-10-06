@@ -2095,6 +2095,8 @@ async function expireStaleRequests(astrologerId, now = new Date()) {
     await chat.save();
 
     emit(`user:${chat.user}`, 'chat:missed', { chatId: String(chat._id) });
+    /** The astrologer's app too — otherwise its popup and queue keep offering a request that can no longer be accepted. */
+    emit(`astrologer:${chat.astrologer}`, 'chat:missed', { chatId: String(chat._id) });
     // eslint-disable-next-line no-await-in-loop
     await notificationService
       .notify({
