@@ -9,6 +9,7 @@
 const asyncHandler = require('../utils/asyncHandler');
 const geoService = require('../services/geo.service');
 const kundliService = require('../services/kundli.service');
+const User = require('../models/User');
 const kundliReadService = require('../services/kundliRead.service');
 const kundliAnalysisService = require('../services/kundliAnalysis.service');
 
@@ -38,6 +39,14 @@ const createBirthProfile = asyncHandler(async (req, res) => {
   const result = await kundliService.createBirthProfile(req.account.accountId, req.body, originOf(req), {
     asSeeker: true,
   });
+  /**
+   * Profile → "Kundlis": every time the seeker generates a kundli from their
+   * app, the count goes up — including a regeneration for the same birth
+   * details (the stored chart is reused, but it was still generated on
+   * request). Only this seeker-facing route counts; an astrologer generating
+   * the seeker's chart in a consultation does not.
+   */
+  await User.updateOne({ _id: req.account.accountId }, { $inc: { 'stats.kundlis': 1 } });
   return res.status(201).json(result);
 });
 
