@@ -162,6 +162,23 @@ const emit = (socket, event, payload) =>
   const afterEnd = await emit(userSocket, CHAT_EVENTS.SEND, { chatId: String(chat._id), content: { text: 'one more thing' } });
   check('no messages after it ends', /ended/.test(afterEnd.error || ''), afterEnd);
 
+  console.log('\n=== declined, and never answered ===');
+  const declineReq = once(astroSocket, 'chat:requested');
+  const declined = await chatService.requestChat({ userId: user._id, astrologerId: astrologer._id, channel: 'chat', intake: { topic: 'career-job' } });
+  await declineReq;
+  const rejectedAtUser = once(userSocket, 'chat:rejected');
+  await chatService.rejectChat({ chatId: declined._id, astrologerId: astrologer._id, reason: 'Declined' });
+  check('the seeker is told the request was declined', (await rejectedAtUser).chatId === String(declined._id));
+
+  const ignoredReq = once(astroSocket, 'chat:requested');
+  const ignored = await chatService.requestChat({ userId: user._id, astrologerId: astrologer._id, channel: 'chat', intake: { topic: 'career-job' } });
+  await ignoredReq;
+  const missedAtUser = once(userSocket, 'chat:missed');
+  const missedAtAstrologer = once(astroSocket, 'chat:missed');
+  await chatService.expireStaleRequests(undefined, new Date(Date.now() + (chatService.REQUEST_TIMEOUT_SECONDS + 5) * 1000));
+  check('an unanswered request ages out on the seeker\'s side', (await missedAtUser).chatId === String(ignored._id));
+  check('…and on the astrologer\'s, so their popup stops offering it', (await missedAtAstrologer).chatId === String(ignored._id));
+
   console.log('\n=== disconnect ===');
   astroSocket.close();
   await new Promise(r => setTimeout(r, 400));
